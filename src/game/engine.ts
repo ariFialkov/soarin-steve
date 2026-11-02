@@ -13,6 +13,7 @@ import { buildFlightPlan, sampleAt, type FlightPlan, type FumbleKind } from './f
 import { ParticleSystem } from './particles';
 import { buildPlaneModel, type PlaneModel } from './planeModel';
 import { World } from './world';
+import { LAUNCH_H } from './constants';
 
 export type GameState = 'menu' | 'aiming' | 'betting' | 'flying' | 'landed';
 
@@ -128,6 +129,7 @@ export class Engine {
     this.scene.add(this.blob);
 
     this.buildLauncher();
+    this.launcher.position.y = LAUNCH_H;
     this.scene.add(this.launcher);
     this.fanModel = this.buildFan();
     this.fanModel.visible = false;
@@ -233,7 +235,7 @@ export class Engine {
 
   private placePlaneOnLauncher(): void {
     if (!this.plane) return;
-    this.plane.group.position.set(0, 1.6, 0);
+    this.plane.group.position.set(0, LAUNCH_H + 1.6, 0);
     this.plane.group.rotation.set(0, 0, 0);
     this.plane.body.position.set(0, 0, 0);
     this.plane.body.rotation.set(0, 0, 0);
@@ -302,10 +304,10 @@ export class Engine {
     this.particles.clear();
     this.launcher.visible = true;
     this.pull = 0;
-    this.camY = 3;
+    this.camY = LAUNCH_H + 3;
     // snap the camera back to the launcher instead of lerping across the whole map
-    this.camera.position.set(0, 2.9, 6);
-    this.camera.lookAt(0, 1.7, -7);
+    this.camera.position.set(0, LAUNCH_H + 2.9, 6);
+    this.camera.lookAt(0, LAUNCH_H + 1.7, -7);
   }
 
   // ---------------------------------------------------------------- launch
@@ -315,7 +317,7 @@ export class Engine {
     this.preroll = { t: 0, v0: (0.45 + 0.55 * power) * 75, z0: this.plane.group.position.z };
     this.updateBands(0);
     audio.whoosh(0.7, 0.8, 1.1);
-    this.particles.emit({ pos: new THREE.Vector3(0, 1.6, 0.5), vel: new THREE.Vector3(0, 0.5, 2), spread: 2, count: 14, life: 0.5, size: 0.14, endSize: 0, colors: ['#ffffff', '#fff3c4'], drag: 2 });
+    this.particles.emit({ pos: new THREE.Vector3(0, LAUNCH_H + 1.6, 0.5), vel: new THREE.Vector3(0, 0.5, 2), spread: 2, count: 14, life: 0.5, size: 0.14, endSize: 0, colors: ['#ffffff', '#fff3c4'], drag: 2 });
     const boosts = { ...profile.boosts };
     let result: RoundResult;
     try {
@@ -483,10 +485,11 @@ export class Engine {
     this.particles.update(dt, this.camera);
     if (this.plane) {
       const p = this.plane.group.position;
-      this.blob.position.set(p.x + this.plane.body.position.x * 1.6, 0.03, p.z);
-      const s = Math.max(0.5, 1.6 - p.y * 0.02);
+      const onRoof = p.z > -6;
+      this.blob.position.set(p.x + this.plane.body.position.x * 1.6, onRoof ? LAUNCH_H + 0.08 : 0.3, p.z);
+      const s = Math.max(0.5, 1.6 - (p.y - (onRoof ? LAUNCH_H : 0)) * 0.02);
       this.blob.scale.set(s * 1.3, s, 1);
-      (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.16 * Math.max(0, 1 - p.y / 40);
+      (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.16 * Math.max(0, 1 - (p.y - (onRoof ? LAUNCH_H : 0)) / 40);
     }
     this.renderer.render(this.scene, this.camera);
   }
@@ -500,9 +503,9 @@ export class Engine {
     this.updateBands(0);
     // slow orbiting camera
     const a = Math.sin(t * 0.18) * 0.9;
-    const target = new THREE.Vector3(Math.sin(a) * 5.5, 2.3 + Math.sin(t * 0.3) * 0.3, Math.cos(a) * 5.5 + 0.8);
+    const target = new THREE.Vector3(Math.sin(a) * 5.5, LAUNCH_H + 2.3 + Math.sin(t * 0.3) * 0.3, Math.cos(a) * 5.5 + 0.8);
     this.camera.position.lerp(target, Math.min(1, dt * 1.5));
-    this.camera.lookAt(0, 1.5, -4);
+    this.camera.lookAt(0, LAUNCH_H + 1.5, -4);
     void dt;
   }
 
@@ -510,14 +513,14 @@ export class Engine {
     if (!this.plane) return;
     const p = this.pull;
     const t = this.menuTime;
-    this.plane.group.position.set(0, 1.6, p * 2.2);
+    this.plane.group.position.set(0, LAUNCH_H + 1.6, p * 2.2);
     this.plane.group.rotation.set(0.1 + p * 0.45, 0, 0);
     this.plane.body.position.set(0, Math.sin(t * 1.2) * 0.02, 0);
     this.plane.body.rotation.set(0, 0, Math.sin(t * 1.1) * 0.03 + p * Math.sin(t * 25) * 0.015);
     this.updateBands(p);
-    const target = new THREE.Vector3(0, 2.9, 5.4 + p * 1.4);
+    const target = new THREE.Vector3(0, LAUNCH_H + 2.9, 5.4 + p * 1.4);
     this.camera.position.lerp(target, Math.min(1, dt * 4));
-    this.camera.lookAt(0, 1.7, -7);
+    this.camera.lookAt(0, LAUNCH_H + 1.7, -7);
   }
 
   /** While the bet resolves the plane is already off the band and climbing; the plan takes over seamlessly. */
@@ -527,7 +530,7 @@ export class Engine {
     p.t += dt;
     const g = this.plane.group;
     g.position.z = p.z0 - p.v0 * p.t;
-    g.position.y = 1.8 + p.t * p.v0 * 0.12;
+    g.position.y = LAUNCH_H + 1.8 + p.t * p.v0 * 0.12;
     g.rotation.set(0.1 + 0.12 * Math.min(1, p.t * 4), 0, 0);
     this.plane.body.position.set(0, 0, 0);
     this.plane.body.rotation.set(0, 0, 0);

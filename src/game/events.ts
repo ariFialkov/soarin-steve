@@ -37,25 +37,30 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: numb
   return m;
 }
 
+const goreMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+
+/** A balloon envelope as a single sphere with vertex-coloured gores (no overlapping shells). */
+export function balloonEnvelope(colors: string[], gores = 8): THREE.Mesh {
+  const geo = new THREE.SphereGeometry(0.5, 24, 12);
+  const pos = geo.attributes.position;
+  const cols = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const a = Math.atan2(pos.getX(i), pos.getZ(i)) + Math.PI;
+    const k = Math.min(gores - 1, Math.floor((a / (Math.PI * 2)) * gores));
+    c.set(colors[k % colors.length]);
+    cols[i * 3] = c.r; cols[i * 3 + 1] = c.g; cols[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  const m = new THREE.Mesh(geo, goreMat);
+  m.scale.set(5.6, 6.6, 5.6);
+  return m;
+}
+
 /** A hot-air balloon: envelope, basket, ropes. Returns the group (origin at the basket). */
 function balloon(mk: (c: string) => THREE.Material, colors: string[]): THREE.Group {
   const g = new THREE.Group();
-  const env = new THREE.Group();
-  for (let i = 0; i < 8; i++) {
-    const seg = new THREE.Mesh(SPHERE, mk(colors[i % colors.length]));
-    seg.scale.set(5.6, 6.6, 5.6);
-    seg.rotation.y = (i / 8) * Math.PI * 2;
-    env.add(seg);
-  }
-  // simple vertical stripes via thin wedges
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    const s = new THREE.Mesh(BOX, mk(colors[(i + 1) % colors.length]));
-    s.scale.set(0.5, 6.2, 0.4);
-    s.position.set(Math.cos(a) * 2.75, 0, Math.sin(a) * 2.75);
-    s.rotation.y = -a;
-    env.add(s);
-  }
+  const env = balloonEnvelope(colors);
   env.position.y = 7.5;
   const neck = mesh(CONE, mk(colors[0]), 0, 3.6, 0, 3.2, 2.2, 3.2, Math.PI, 0, 0);
   const basket = mesh(BOX, mk('#9a6b3c'), 0, 0.6, 0, 1.6, 1.2, 1.6);
@@ -254,23 +259,22 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
       break;
     }
     case 'pigeons': {
-      // a lamp post full of pigeons that explode into the air
-      group.add(mesh(CYL_LO, mk('#4b515b'), 0, h / 2 - 0.5, 0, 0.18, h - 1, 0.18));
-      group.add(mesh(BOX, mk('#4b515b'), 0, h - 1, 0, 3, 0.15, 0.15));
+      // pigeons perched on a wire strung across the avenue between two kerb-side poles
+      for (const sx of [-1, 1]) group.add(mesh(CYL_LO, mk('#4b515b'), sx * 8.7, (h + 0.6) / 2, 0, 0.18, h + 0.6, 0.18));
+      group.add(mesh(CYL_LO, mk('#3a3d42'), 0, h + 0.5, 0, 0.035, 17.4, 0.035, 0, 0, Math.PI / 2));
       const birds: THREE.Mesh[] = [];
-      for (let i = 0; i < 8; i++) {
-        const b = mesh(SPHERE_LO, mk(['#8a8f99', '#6b7079', '#b7bcc4'][i % 3]), -1.4 + i * 0.4, h - 0.7, 0, 0.35, 0.35, 0.5);
+      for (let i = 0; i < 9; i++) {
+        const b = mesh(SPHERE_LO, mk(['#8a8f99', '#6b7079', '#b7bcc4'][i % 3]), -6 + i * 1.5, h + 0.75, 0, 0.35, 0.38, 0.5);
         group.add(b); birds.push(b);
       }
-      update = (dt) => {
-        if (self.triggered) {
-          birds.forEach((b, i) => {
-            b.position.x += (i % 2 ? 1 : -1) * dt * (6 + i);
-            b.position.y += dt * (5 + i * 0.5);
-            b.position.z += dt * (i % 3 - 1) * 3;
-          });
-          if (self.age < 0.3 && Math.random() < 0.8) particles.emit({ pos: V(0, h - 0.5, z), vel: V(0, 2, 1), spread: 3, count: 3, life: 1.4, size: 0.2, endSize: 0.1, colors: ['#b7bcc4', '#ffffff'], drag: 1, gravity: 1.5, spin: 10 });
-        }
+      update = (dt, t) => {
+        if (!self.triggered) { birds.forEach((b, i) => { b.position.y = h + 0.75 + Math.sin(t * 3 + i) * 0.03; }); return; }
+        birds.forEach((b, i) => {
+          b.position.x += (i % 2 ? 1 : -1) * dt * (6 + i);
+          b.position.y += dt * (5 + i * 0.5);
+          b.position.z += dt * (i % 3 - 1) * 3;
+        });
+        if (self.age < 0.3 && Math.random() < 0.8) particles.emit({ pos: V(0, h + 0.5, z), vel: V(0, 2, 1), spread: 3, count: 3, life: 1.4, size: 0.2, endSize: 0.1, colors: ['#b7bcc4', '#ffffff'], drag: 1, gravity: 1.5, spin: 10 });
       };
       break;
     }

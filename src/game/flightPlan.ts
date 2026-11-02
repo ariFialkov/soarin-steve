@@ -8,6 +8,7 @@
  */
 import { Rng } from '../core/rng';
 import type { FlightStyle } from '../data/planes';
+import { LAUNCH_H } from './constants';
 
 export type EventKind =
   | 'vent' | 'fountain' | 'burner' | 'firework' | 'jetwash' | 'thermal'                       // boosts
@@ -186,14 +187,15 @@ export function buildFlightPlan(opts: {
   sArr[N - 1] = L; vArr[N - 1] = 0;
 
   // Height profile: a smooth arc plus bumps at events, touching down just before the end.
-  const h0 = 1.8;
-  const peak = 4 + (8 + 16 * opts.angle) * Math.min(1, L / 150) + Math.min(48, L / 28);
+  const h0 = LAUNCH_H + 1.8;
+  const peak = 2 + (8 + 16 * opts.angle) * Math.min(1, L / 150) + Math.min(40, L / 32);
   const landT = Math.max(T * 0.86, T - 1.8);
   const styleLift = opts.style === 'swoop' ? 1.25 : opts.style === 'flutter' ? 0.8 : 1;
   for (let i = 0; i < N; i++) {
     const t = i * dt;
     const u = Math.min(1, t / T);
-    let h = h0 + peak * Math.sin(Math.PI * Math.min(1, u * 1.08)) * styleLift;
+    // glide down from the roof while the launch arc plays out on top of it
+    let h = 1.8 + (h0 - 1.8) * Math.pow(1 - u, 1.6) + peak * Math.sin(Math.PI * Math.min(1, u * 1.08)) * styleLift;
     for (const e of events) {
       const dtE = t - e.t;
       if (dtE > 0 && dtE < 3) {
@@ -249,7 +251,7 @@ function buildFumblePlan(rng: Rng, L: number, power: number, unitsPerMetre: numb
   const N = Math.ceil(T / dt) + 2;
   const sArr = new Float32Array(N), vArr = new Float32Array(N), hArr = new Float32Array(N);
   const tBurst = Math.min(0.35, T * 0.12);
-  const landT = Math.min(T * 0.62, 1.6);
+  const landT = Math.min(T * 0.66, 2.0);
   // shape v(t): v0 during the burst, exponential-ish decay to the touchdown, then linear skid to zero at T.
   // Scale the whole curve so the integral is exactly L.
   const raw = new Float32Array(N);
@@ -273,13 +275,15 @@ function buildFumblePlan(rng: Rng, L: number, power: number, unitsPerMetre: numb
   }
   sArr[N - 1] = L; vArr[N - 1] = 0;
   // height: a short hop up, then a tumble to the ground
-  const peak = kind === 'nosedive' ? 2.6 : 4.5 + power * 2;
+  const peak = kind === 'nosedive' ? 1.5 : 3.5 + power * 2;
+  const h0 = LAUNCH_H + 1.8;
   for (let i = 0; i < N; i++) {
     const t = i * dt;
     let h: number;
     if (t < landT) {
       const u = t / landT;
-      h = 1.8 + peak * Math.sin(Math.PI * Math.min(1, u * 1.1)) * (1 - u * 0.35) - u * u * 1.5;
+      // brief hop, then it tumbles off the roof and drops to the street
+      h = h0 * (1 - u) * (1 - u) + peak * Math.sin(Math.PI * Math.min(1, u * 1.4)) * (1 - u);
     } else h = 0.3;
     hArr[i] = Math.max(0.3, h);
   }

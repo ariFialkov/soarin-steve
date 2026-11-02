@@ -17,7 +17,8 @@ const dir = mkdtempSync(join(tmpdir(), 'pp-'));
 writeFileSync(join(dir, 'config.js'), load('core/config.ts').replace(/location\.search/g, '""').replace(/localStorage/g, 'undefined'));
 writeFileSync(join(dir, 'rng.js'), load('core/rng.ts'));
 writeFileSync(join(dir, 'outcome.js'), load('core/outcome.ts', { "'./config'": "'./config.js'" }));
-writeFileSync(join(dir, 'flightPlan.js'), load('game/flightPlan.ts', { "'../core/rng'": "'./rng.js'" }));
+writeFileSync(join(dir, 'constants.js'), load('game/constants.ts'));
+writeFileSync(join(dir, 'flightPlan.js'), load('game/flightPlan.ts', { "'../core/rng'": "'./rng.js'", "'./constants'": "'./constants.js'" }));
 
 const { TIERS, TIER_CONFIG } = await import(join(dir, 'config.js'));
 const { multiplierFor } = await import(join(dir, 'outcome.js'));

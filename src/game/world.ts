@@ -8,8 +8,8 @@ import { Rng } from '../core/rng';
 import type { FlightPlan } from './flightPlan';
 import type { ParticleSystem } from './particles';
 import { GeoBatch, PLANE, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture } from './geobatch';
-import { CityPlan, GRID, buildChunk, districtGround, type AnimatedObject, type Batches, type District } from './city';
-import { DECOY_KINDS, makeEventObject, type EventObject } from './events';
+import { CityPlan, GRID, LAYER, buildChunk, districtGround, type AnimatedObject, type Batches, type District } from './city';
+import { DECOY_KINDS, balloonEnvelope, makeEventObject, type EventObject } from './events';
 
 export const CHUNK = GRID.CHUNK;
 const AHEAD = 7;
@@ -24,7 +24,7 @@ interface Chunk {
   index: number;
   group: THREE.Group;
   disposables: { dispose(): void }[];
-  labels: { s: number; mat: THREE.MeshBasicMaterial; color: string }[];
+  labels: { s: number; mat: THREE.MeshBasicMaterial; color: string; stroke: string }[];
   animated: AnimatedObject[];
   decoys: EventObject[];
 }
@@ -37,16 +37,21 @@ function fmtCash(v: number): string {
   return '$' + v.toFixed(2);
 }
 
-function makeLabel(text: string, color: string, w = 256, h = 72): { tex: THREE.CanvasTexture; aspect: number } {
+/** Chunky cartoon lettering: heavy rounded face with an outline, both in shades of the surface it is painted on. */
+function makeLabel(text: string, fill: string, stroke: string, w = 320, h = 96): { tex: THREE.CanvasTexture; aspect: number } {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const g = c.getContext('2d')!;
   g.clearRect(0, 0, w, h);
-  g.font = `bold ${Math.floor(h * 0.78)}px "Trebuchet MS", "Segoe UI", system-ui, sans-serif`;
+  g.font = `900 ${Math.floor(h * 0.74)}px "Arial Rounded MT Bold", "Helvetica Rounded", "Nunito", "Varela Round", "Segoe UI Black", "Arial Black", Impact, sans-serif`;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillStyle = color;
-  g.fillText(text, w / 2, h / 2 + 2);
+  g.lineJoin = 'round';
+  g.lineWidth = h * 0.2;
+  g.strokeStyle = stroke;
+  g.strokeText(text, w / 2, h / 2 + 3);
+  g.fillStyle = fill;
+  g.fillText(text, w / 2, h / 2 + 3);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.minFilter = THREE.LinearMipMapLinearFilter;
@@ -122,7 +127,7 @@ export class World {
     for (const [, ch] of this.chunks) {
       for (const l of ch.labels) {
         const old = l.mat.map;
-        const { tex } = makeLabel(fmtCash(l.s * cashPerUnit), l.color);
+        const { tex } = makeLabel(fmtCash(l.s * cashPerUnit), l.color, l.stroke);
         l.mat.map = tex;
         l.mat.needsUpdate = true;
         old?.dispose();
@@ -167,32 +172,32 @@ export class World {
 
     // ---- avenue + cash track
     if (district !== 'river') {
-      B.solid.add(PLANE, col.ave, 0, 0.02, zc, -Math.PI / 2, 0, 0, GRID.AVE * 2, CHUNK, 1);
+      B.solid.add(PLANE, col.ave, 0, LAYER.STREET, zc, -Math.PI / 2, 0, 0, GRID.AVE * 2, CHUNK, 1);
     }
-    B.solid.add(PLANE, col.track, 0, 0.03, zc, -Math.PI / 2, 0, 0, 12, CHUNK, 1);
+    B.solid.add(PLANE, col.track, 0, LAYER.TRACK, zc, -Math.PI / 2, 0, 0, 12, CHUNK, 1);
     // lane markings
     for (let z = z1 - 2; z > z0; z -= 4) {
-      B.solid.add(PLANE, district === 'park' || district === 'oldtown' ? '#e8d6b4' : '#d3b24e', 0, 0.04, z, -Math.PI / 2, 0, 0, 0.18, 2, 1);
-      B.solid.add(PLANE, col.line, 3.5, 0.04, z, -Math.PI / 2, 0, 0, 0.16, 2, 1);
-      B.solid.add(PLANE, col.line, -3.5, 0.04, z, -Math.PI / 2, 0, 0, 0.16, 2, 1);
+      B.solid.add(PLANE, col.lane, 0, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2, 1);
+      B.solid.add(PLANE, col.line, 3.5, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.16, 2, 1);
+      B.solid.add(PLANE, col.line, -3.5, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.16, 2, 1);
     }
     // cross markers every 10 units with cash labels either side
     for (let s = Math.ceil(-z1 / 10) * 10; s < -z1 + CHUNK && i >= 0; s += 10) {
       if (s <= 0) continue;
       const z = -s;
-      B.solid.add(PLANE, col.line, 0, 0.045, z, -Math.PI / 2, 0, 0, 12, 0.3, 1);
+      B.solid.add(PLANE, col.cross, 0, LAYER.CROSS, z, -Math.PI / 2, 0, 0, 12, 0.36, 1);
       const cash = fmtCash(s * this.params.cashPerUnit);
-      const { tex, aspect } = makeLabel(cash, col.label);
+      const { tex, aspect } = makeLabel(cash, col.label, col.labelStroke);
       disposables.push(tex);
       const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
       disposables.push(mat);
-      labels.push({ s, mat, color: col.label });
+      labels.push({ s, mat, color: col.label, stroke: col.labelStroke });
       for (const side of [-1, 1]) {
         const m = new THREE.Mesh(PLANE, mat);
-        const hgt = 1.5;
+        const hgt = 2.0;
         m.scale.set(hgt * aspect, hgt, 1);
         m.rotation.x = -Math.PI / 2;
-        m.position.set(side * 3.6, 0.05, z + 1.0);
+        m.position.set(side * 3.5, LAYER.LABEL, z + 1.3);
         group.add(m);
       }
     }
@@ -256,7 +261,7 @@ export class World {
     if (rng.chance(0.35)) {
       const g = new THREE.Group();
       const cols = [rng.pick(['#f2c14e', '#e5679a', '#5fb8e6', '#7bc96f']), '#ffffff'];
-      for (let k = 0; k < 8; k++) { const s = new THREE.Mesh(SPHERE, mk(cols[k % 2])); s.scale.set(5.6, 6.6, 5.6); s.rotation.y = (k / 8) * Math.PI * 2; s.position.y = 7.5; g.add(s); }
+      const env = balloonEnvelope(cols); env.position.y = 7.5; g.add(env);
       const neck = new THREE.Mesh(CONE, mk(cols[0])); neck.scale.set(3.2, 2.2, 3.2); neck.rotation.x = Math.PI; neck.position.y = 3.6; g.add(neck);
       const basket = new THREE.Mesh(BOX, mk('#9a6b3c')); basket.scale.set(1.6, 1.2, 1.6); basket.position.y = 0.6; g.add(basket);
       g.position.set(rng.sign() * rng.range(40, 150), rng.range(20, 70), z1 - rng.range(0, CHUNK));

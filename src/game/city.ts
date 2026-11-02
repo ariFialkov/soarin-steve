@@ -9,6 +9,8 @@
  */
 import * as THREE from 'three';
 import { Rng } from '../core/rng';
+import { LAUNCH_H } from './constants';
+export { LAUNCH_H };
 import { BOX, CONE, CYL, CYL_LO, DISC, HEMI, PLANE, PRISM, PYRAMID, SPHERE_LO, TORUS, WEDGE, GeoBatch, windowBox } from './geobatch';
 
 export type District = 'suburb' | 'residential' | 'commercial' | 'downtown' | 'park' | 'river' | 'industrial' | 'oldtown';
@@ -25,6 +27,8 @@ export const GRID = {
   CHUNK: 64,       // two blocks + two cross streets
   SIDEWALK: 2,     // inset from the block edge to buildable area
 };
+/** Vertical layering so coplanar surfaces never fight: streets sit above the base, paint above streets, lot ground above kerbs. */
+export const LAYER = { STREET: 0.03, TRACK: 0.06, MARK: 0.09, CROSS: 0.11, LABEL: 0.14, KERB: 0.15, LOT: 0.2, DETAIL: 0.24, DETAIL2: 0.27 };
 export const GRID_END_X = GRID.KERB + GRID.BLOCKS_X * (GRID.BLOCK_X + GRID.STREET_X) - GRID.STREET_X; // 181.5
 
 export interface Rect { x0: number; x1: number; z0: number; z1: number } // z0 < z1 (z0 is further ahead)
@@ -191,8 +195,8 @@ function bush(B: Batches, rng: Rng, x: number, z: number, y = 0.15): void {
   B.solid.add(SPHERE_LO, c, x + 0.6, y + 0.35, z + 0.3, 0, 0, 0, 0.9, 0.7, 0.9);
 }
 
-function flowerBed(B: Batches, rng: Rng, x: number, z: number, r: number, y = 0.16): void {
-  B.solid.add(DISC, '#6b4a2b', x, y + 0.02, z, -Math.PI / 2, 0, 0, r * 2, r * 2, 1);
+function flowerBed(B: Batches, rng: Rng, x: number, z: number, r: number, y = LAYER.LOT): void {
+  B.solid.add(DISC, '#6b4a2b', x, y + 0.07, z, -Math.PI / 2, 0, 0, r * 2, r * 2, 1);
   for (let i = 0; i < 7; i++) {
     const a = rng.range(0, Math.PI * 2), d = rng.range(0, r * 0.8);
     B.solid.add(SPHERE_LO, rng.pick(['#ff7b9c', '#ffd166', '#ffffff', '#c084fc', '#ff8c42']), x + Math.cos(a) * d, y + 0.35, z + Math.sin(a) * d, 0, 0, 0, 0.5, 0.4, 0.5);
@@ -256,7 +260,6 @@ export function house(B: Batches, rng: Rng, cx: number, cz: number, w: number, d
   const roof = rng.pick(PAL.roofs);
   const r: Rect = { x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 };
   body(B, wall, r, 0.15, h, 'windows', 2.6);
-  B.solid.box(wall, cx, 0.15 + h / 2, cz, w, h, d); // solid core so the roof overhang has no gap underneath
   gableRoof(B, r, 0.15 + h, roof, rng.chance(0.5), 0.5);
   // door + chimney
   B.solid.box('#8d5a3b', cx + w * 0.2, 0.15 + 0.9, cz + facingZ * (d / 2 + 0.03), 0.9, 1.8, 0.1);
@@ -350,7 +353,6 @@ function church(B: Batches, rng: Rng, r: Rect): void {
   const wall = rng.pick(['#f1e8d8', '#e8dcc6', '#d8d2c8']);
   const nave: Rect = { x0: cx - 5, x1: cx + 5, z0: cz - 8, z1: cz + 6 };
   body(B, wall, nave, 0.15, 7, 'windows', 2.6);
-  B.solid.box(wall, cx, 0.15 + 3.5, cz - 1, 10, 7, 14);
   gableRoof(B, nave, 7.15, '#5c6b73', true, 0.5);
   // tower at the front
   B.solid.box(wall, cx, 0.15 + 8, cz + 7, 4, 16, 4);
@@ -399,8 +401,8 @@ function ringBlock(B: Batches, rng: Rng, r: Rect, district: District): void {
       // awning + sign on the street face
       const ac = rng.pick(['#e2574c', '#2f8a4b', '#f2c14e', '#3f5f8a', '#e5679a']);
       const cx = (rect.x0 + rect.x1) / 2, cz = (rect.z0 + rect.z1) / 2;
-      if (outwardFace === 'x0') { B.solid.box(ac, rect.x0 - 0.6, 3.2, cz, 1.2, 0.15, rect.z1 - rect.z0 - 0.6); B.solid.box('#fff8e6', rect.x0 - 0.08, 4.4, cz, 0.16, 1.2, (rect.z1 - rect.z0) * 0.6); }
-      if (outwardFace === 'x1') { B.solid.box(ac, rect.x1 + 0.6, 3.2, cz, 1.2, 0.15, rect.z1 - rect.z0 - 0.6); B.solid.box('#fff8e6', rect.x1 + 0.08, 4.4, cz, 0.16, 1.2, (rect.z1 - rect.z0) * 0.6); }
+      if (outwardFace === 'x0') { B.solid.box(ac, rect.x0 - 0.6, 3.2, cz, 1.2, 0.15, rect.z1 - rect.z0 - 0.6); B.solid.box('#fff8e6', rect.x0 - 0.08, 4.4, cz, LAYER.LOT, 1.2, (rect.z1 - rect.z0) * 0.6); }
+      if (outwardFace === 'x1') { B.solid.box(ac, rect.x1 + 0.6, 3.2, cz, 1.2, 0.15, rect.z1 - rect.z0 - 0.6); B.solid.box('#fff8e6', rect.x1 + 0.08, 4.4, cz, LAYER.LOT, 1.2, (rect.z1 - rect.z0) * 0.6); }
       if (outwardFace === 'z0') { B.solid.box(ac, cx, 3.2, rect.z0 - 0.6, rect.x1 - rect.x0 - 0.6, 0.15, 1.2); B.solid.box('#fff8e6', cx, 4.4, rect.z0 - 0.08, (rect.x1 - rect.x0) * 0.6, 1.2, 0.16); }
       if (outwardFace === 'z1') { B.solid.box(ac, cx, 3.2, rect.z1 + 0.6, rect.x1 - rect.x0 - 0.6, 0.15, 1.2); B.solid.box('#fff8e6', cx, 4.4, rect.z1 + 0.08, (rect.x1 - rect.x0) * 0.6, 1.2, 0.16); }
     }
@@ -442,14 +444,14 @@ function ringBlock(B: Batches, rng: Rng, r: Rect, district: District): void {
   // courtyard
   const cy = inset(r, depth + 1);
   if (cy.x1 - cy.x0 > 3 && cy.z1 - cy.z0 > 3) {
-    B.solid.add(PLANE, PAL.grassDark, (cy.x0 + cy.x1) / 2, 0.17, (cy.z0 + cy.z1) / 2, -Math.PI / 2, 0, 0, cy.x1 - cy.x0, cy.z1 - cy.z0, 1);
+    B.solid.add(PLANE, PAL.grassDark, (cy.x0 + cy.x1) / 2, LAYER.DETAIL, (cy.z0 + cy.z1) / 2, -Math.PI / 2, 0, 0, cy.x1 - cy.x0, cy.z1 - cy.z0, 1);
     for (let i = 0; i < rng.int(1, 3); i++) tree(B, rng, rng.range(cy.x0 + 1, cy.x1 - 1), rng.range(cy.z0 + 1, cy.z1 - 1), 0.8);
   }
 }
 
 function suburbBlock(B: Batches, rng: Rng, r: Rect): void {
   // lawn
-  B.solid.add(PLANE, PAL.grass, (r.x0 + r.x1) / 2, 0.16, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
+  B.solid.add(PLANE, PAL.grass, (r.x0 + r.x1) / 2, LAYER.LOT, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
   const cols = 2, rows = 2;
   const lw = (r.x1 - r.x0) / cols, ld = (r.z1 - r.z0) / rows;
   for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
@@ -460,19 +462,19 @@ function suburbBlock(B: Batches, rng: Rng, r: Rect): void {
     const cz = facingZ < 0 ? lz0 + d / 2 + 1.5 : lz0 + ld - d / 2 - 1.5;
     house(B, rng, cx, cz, w, d, facingZ);
     // driveway
-    B.solid.add(PLANE, '#b9b5ad', cx + w * 0.35, 0.165, facingZ < 0 ? (lz0 + (cz - d / 2)) / 2 : (lz0 + ld + (cz + d / 2)) / 2, -Math.PI / 2, 0, 0, 2.4, Math.abs(facingZ < 0 ? cz - d / 2 - lz0 : lz0 + ld - cz - d / 2) + 0.1, 1);
+    B.solid.add(PLANE, '#b9b5ad', cx + w * 0.35, LAYER.DETAIL, facingZ < 0 ? (lz0 + (cz - d / 2)) / 2 : (lz0 + ld + (cz + d / 2)) / 2, -Math.PI / 2, 0, 0, 2.4, Math.abs(facingZ < 0 ? cz - d / 2 - lz0 : lz0 + ld - cz - d / 2) + 0.1, 1);
     // back yard
     const byz = facingZ < 0 ? [cz + d / 2 + 1, lz0 + ld - 0.8] : [lz0 + 0.8, cz - d / 2 - 1];
     if (byz[1] - byz[0] > 2) {
       tree(B, rng, rng.range(lx0 + 1, lx0 + lw - 1), rng.range(byz[0], byz[1]), 0.85);
-      if (rng.chance(0.2)) B.solid.add(DISC, '#6fd0f0', lx0 + lw / 2, 0.17, (byz[0] + byz[1]) / 2, -Math.PI / 2, 0, 0, 4, 2.6, 1);
+      if (rng.chance(0.2)) B.solid.add(DISC, '#6fd0f0', lx0 + lw / 2, LAYER.DETAIL, (byz[0] + byz[1]) / 2, -Math.PI / 2, 0, 0, 4, 2.6, 1);
       else if (rng.chance(0.4)) bush(B, rng, rng.range(lx0 + 1, lx0 + lw - 1), rng.range(byz[0], byz[1]));
     }
   }
 }
 
 function downtownBlock(B: Batches, rng: Rng, r: Rect): void {
-  B.solid.add(PLANE, '#cfcac0', (r.x0 + r.x1) / 2, 0.16, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
+  B.solid.add(PLANE, '#cfcac0', (r.x0 + r.x1) / 2, LAYER.LOT, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
   const two = rng.chance(0.4);
   if (two) {
     const mid = (r.x0 + r.x1) / 2;
@@ -492,7 +494,7 @@ function downtownBlock(B: Batches, rng: Rng, r: Rect): void {
 }
 
 function industrialBlock(B: Batches, rng: Rng, r: Rect): void {
-  B.solid.add(PLANE, '#b3aea4', (r.x0 + r.x1) / 2, 0.16, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
+  B.solid.add(PLANE, '#b3aea4', (r.x0 + r.x1) / 2, LAYER.LOT, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
   const w = rng.range(14, 20), d = rng.range(10, 13);
   const left = rng.chance(0.5);
   const wr: Rect = left ? { x0: r.x0 + 0.5, x1: r.x0 + 0.5 + w, z0: r.z1 - 0.5 - d, z1: r.z1 - 0.5 } : { x0: r.x1 - 0.5 - w, x1: r.x1 - 0.5, z0: r.z1 - 0.5 - d, z1: r.z1 - 0.5 };
@@ -506,15 +508,15 @@ function industrialBlock(B: Batches, rng: Rng, r: Rect): void {
 }
 
 function parkBlock(B: Batches, rng: Rng, r: Rect, nearAvenue: boolean): void {
-  B.solid.add(PLANE, PAL.grass, (r.x0 + r.x1) / 2, 0.16, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
+  B.solid.add(PLANE, PAL.grass, (r.x0 + r.x1) / 2, LAYER.LOT, (r.z0 + r.z1) / 2, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
   const cx = (r.x0 + r.x1) / 2, cz = (r.z0 + r.z1) / 2;
   // paths
-  B.solid.add(PLANE, PAL.pavers, cx, 0.17, cz, -Math.PI / 2, 0, 0, 2.2, r.z1 - r.z0, 1);
-  B.solid.add(PLANE, PAL.pavers, cx, 0.17, cz, -Math.PI / 2, 0, 0, r.x1 - r.x0, 2.2, 1);
+  B.solid.add(PLANE, PAL.pavers, cx, LAYER.DETAIL, cz, -Math.PI / 2, 0, 0, 2.2, r.z1 - r.z0, 1);
+  B.solid.add(PLANE, PAL.pavers, cx, LAYER.DETAIL, cz, -Math.PI / 2, 0, 0, r.x1 - r.x0, 2.2, 1);
   const centre = rng.next();
   if (centre < 0.3) {
     // pond
-    B.solid.add(DISC, PAL.water, cx + 5, 0.17, cz - 4, -Math.PI / 2, 0, 0, 9, 6, 1);
+    B.solid.add(DISC, PAL.water, cx + 5, LAYER.DETAIL, cz - 4, -Math.PI / 2, 0, 0, 9, 6, 1);
   } else if (centre < 0.55) {
     // fountain
     B.solid.add(CYL, '#cfc7b8', cx, 0.4, cz, 0, 0, 0, 5, 0.5, 5);
@@ -547,7 +549,7 @@ function parkBlock(B: Batches, rng: Rng, r: Rect, nearAvenue: boolean): void {
 // ---------------------------------------------------------------- landmarks
 function landmark(B: Batches, rng: Rng, kind: Landmark, r: Rect, side: 1 | -1, animated: AnimatedObject[], mkMat: (c: string) => THREE.Material): void {
   const cx = (r.x0 + r.x1) / 2, cz = (r.z0 + r.z1) / 2;
-  B.solid.add(PLANE, PAL.pavers, cx, 0.16, cz, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
+  B.solid.add(PLANE, PAL.pavers, cx, LAYER.LOT, cz, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
   switch (kind) {
     case 'clocktower': {
       const stone = '#e3d7c3';
@@ -566,7 +568,6 @@ function landmark(B: Batches, rng: Rng, kind: Landmark, r: Rect, side: 1 | -1, a
       const stone = '#e9e1d1';
       const nave: Rect = { x0: cx - 7, x1: cx + 7, z0: cz - 9, z1: cz + 5 };
       body(B, stone, nave, 0.15, 14, 'windows', 3.5);
-      B.solid.box(stone, cx, 0.15 + 7, cz - 2, 14, 14, 14);
       gableRoof(B, nave, 14.15, '#5c6b73', true, 0.45);
       for (const dx of [-5, 5]) {
         B.solid.box(stone, cx + dx, 0.15 + 13, cz + 7, 4.2, 26, 4.2);
@@ -582,8 +583,8 @@ function landmark(B: Batches, rng: Rng, kind: Landmark, r: Rect, side: 1 | -1, a
       break;
     }
     case 'stadium': {
-      B.solid.add(DISC, '#6fbf5a', cx, 0.17, cz, -Math.PI / 2, 0, 0, 18, 14, 1);
-      B.solid.add(TORUS, '#ffffff', cx, 0.18, cz, -Math.PI / 2, 0, 0, 14, 10, 1);
+      B.solid.add(DISC, '#6fbf5a', cx, LAYER.DETAIL, cz, -Math.PI / 2, 0, 0, 18, 14, 1);
+      B.solid.add(TORUS, '#ffffff', cx, LAYER.DETAIL2, cz, -Math.PI / 2, 0, 0, 14, 10, 1);
       const n = 28;
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2;
@@ -647,7 +648,7 @@ function landmark(B: Batches, rng: Rng, kind: Landmark, r: Rect, side: 1 | -1, a
         B.solid.box('#9a948a', cx + dx, 0.5, cz + dz, 2.4, 0.7, 2.4);
         tree(B, rng, cx + dx, cz + dz, 0.6, 0.8);
       }
-      B.solid.add(DISC, PAL.waterLight, cx, 0.18, cz + 8.5, -Math.PI / 2, 0, 0, 12, 4, 1);
+      B.solid.add(DISC, PAL.waterLight, cx, LAYER.DETAIL, cz + 8.5, -Math.PI / 2, 0, 0, 12, 4, 1);
       break;
     }
     case 'arch': {
@@ -669,7 +670,6 @@ function landmark(B: Batches, rng: Rng, kind: Landmark, r: Rect, side: 1 | -1, a
       const stone = '#efe8da';
       const base: Rect = { x0: cx - 11, x1: cx + 11, z0: cz - 8, z1: cz + 8 };
       body(B, stone, base, 0.15, 10, 'windows', 3.2);
-      B.solid.box(stone, cx, 0.15 + 5, cz, 22, 10, 16);
       B.solid.box(stone, cx, 0.15 + 10.3, cz, 22.6, 0.6, 16.6);
       B.solid.add(CYL, stone, cx, 0.15 + 13, cz, 0, 0, 0, 11, 6, 11);
       B.solid.add(HEMI, '#7fa8a0', cx, 0.15 + 16, cz, 0, 0, 0, 12, 7, 12);
@@ -710,7 +710,7 @@ function landmark(B: Batches, rng: Rng, kind: Landmark, r: Rect, side: 1 | -1, a
 
 // ---------------------------------------------------------------- street furniture
 function lamp(B: Batches, x: number, z: number): void {
-  B.solid.add(CYL_LO, '#4b515b', x, 0.15 + 3, z, 0, 0, 0, 0.16, 6, 0.16);
+  B.solid.add(CYL_LO, '#4b515b', x, 0.15 + 3, z, 0, 0, 0, LAYER.LOT, 6, 0.16);
   B.solid.box('#4b515b', x + (x > 0 ? -0.6 : 0.6), 0.15 + 6, z, 1.3, 0.14, 0.14);
   B.solid.box('#fff3b0', x + (x > 0 ? -1.1 : 1.1), 0.15 + 5.85, z, 0.6, 0.3, 0.5);
 }
@@ -771,9 +771,9 @@ export function buildChunk(B: Batches, plan: CityPlan, i: number, seed: string, 
   // cross streets
   for (const j of [2 * i, 2 * i + 1]) {
     const zs = crossStreetZ(j);
-    B.solid.add(PLANE, PAL.asphalt, 0, 0.02, zs, -Math.PI / 2, 0, 0, GRID_END_X * 2 + 20, GRID.STREET_Z, 1);
+    B.solid.add(PLANE, PAL.asphalt, 0, LAYER.STREET, zs, -Math.PI / 2, 0, 0, GRID_END_X * 2 + 20, GRID.STREET_Z, 1);
     // crosswalk across the avenue
-    for (const edge of [zs - 3.2, zs + 3.2]) for (let x = -6; x <= 6; x += 1.5) B.solid.add(PLANE, PAL.laneWhite, x, 0.04, edge, -Math.PI / 2, 0, 0, 0.8, 1.2, 1);
+    for (const edge of [zs - 3.2, zs + 3.2]) for (let x = -6; x <= 6; x += 1.5) B.solid.add(PLANE, PAL.laneWhite, x, LAYER.MARK, edge, -Math.PI / 2, 0, 0, 0.8, 1.2, 1);
     // traffic lights at the avenue corners
     trafficLight(B, 10.2, zs + 4.6, -1);
     trafficLight(B, -10.2, zs - 4.6, 1);
@@ -783,11 +783,11 @@ export function buildChunk(B: Batches, plan: CityPlan, i: number, seed: string, 
     const [, bx1] = blockRectX(k, 1);
     const sx = bx1 + GRID.STREET_X / 2;
     if (k < GRID.BLOCKS_X - 1) {
-      B.solid.add(PLANE, PAL.asphalt, sx, 0.02, zc, -Math.PI / 2, 0, 0, GRID.STREET_X, GRID.CHUNK, 1);
-      B.solid.add(PLANE, PAL.asphalt, -sx, 0.02, zc, -Math.PI / 2, 0, 0, GRID.STREET_X, GRID.CHUNK, 1);
+      B.solid.add(PLANE, PAL.asphalt, sx, LAYER.STREET, zc, -Math.PI / 2, 0, 0, GRID.STREET_X, GRID.CHUNK, 1);
+      B.solid.add(PLANE, PAL.asphalt, -sx, LAYER.STREET, zc, -Math.PI / 2, 0, 0, GRID.STREET_X, GRID.CHUNK, 1);
       for (let z = z1 - 2; z > z0; z -= 5) {
-        B.solid.add(PLANE, PAL.laneWhite, sx, 0.035, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
-        B.solid.add(PLANE, PAL.laneWhite, -sx, 0.035, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
+        B.solid.add(PLANE, PAL.laneWhite, sx, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
+        B.solid.add(PLANE, PAL.laneWhite, -sx, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
       }
     }
   }
@@ -824,7 +824,7 @@ export function buildChunk(B: Batches, plan: CityPlan, i: number, seed: string, 
     const zs = crossStreetZ(j);
     for (let n = 0; n < rng.int(3, 7); n++) {
       const side = rng.sign();
-      car(B, rng, side * rng.range(12, GRID_END_X - 6), zs + rng.sign() * 2.6, false, 0.02);
+      car(B, rng, side * rng.range(12, GRID_END_X - 6), zs + rng.sign() * 2.6, false, LAYER.STREET);
     }
   }
 
@@ -850,7 +850,7 @@ export function buildChunk(B: Batches, plan: CityPlan, i: number, seed: string, 
   for (let n = 0; n < rng.int(2, 5); n++) {
     const side = rng.sign();
     const z = z1 - rng.range(2, GRID.CHUNK - 2);
-    if (rng.chance(0.2)) bus(B, rng, side * 5.3, z); else car(B, rng, side * 5.3, z, true, 0.02);
+    if (rng.chance(0.2)) bus(B, rng, side * 5.3, z); else car(B, rng, side * 5.3, z, true, LAYER.STREET);
   }
 
   // ---- beyond the grid: low-detail outskirts and hills
@@ -874,7 +874,44 @@ export function buildChunk(B: Batches, plan: CityPlan, i: number, seed: string, 
     }
   }
 
+  if (i === 0) buildLaunchBuilding(B, rng);
   return { animated };
+}
+
+/** The tower the avenue starts from: the slingshot sits on its roof terrace. */
+function buildLaunchBuilding(B: Batches, rng: Rng): void {
+  const H = LAUNCH_H;
+  const r: Rect = { x0: -GRID.KERB, x1: GRID.KERB, z0: -6, z1: 30 };
+  const cx = 0, cz = (r.z0 + r.z1) / 2;
+  const w = r.x1 - r.x0, d = r.z1 - r.z0;
+  // body: warm stone base, windowed floors, a glass band near the top
+  B.solid.box('#d9cfbd', cx, 2, cz, w + 1, 4, d + 1);
+  body(B, '#f1eadc', { x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, 4, H - 7, 'windows', 3.2);
+  body(B, '#bfe0f5', { x0: r.x0 + 0.2, x1: r.x1 - 0.2, z0: r.z0 + 0.2, z1: r.z1 - 0.2 }, H - 3, 2.4, 'glass', 3);
+  // roof deck + parapet
+  B.solid.box('#e6dccb', cx, H - 0.3, cz, w + 1.2, 0.6, d + 1.2);
+  B.solid.add(PLANE, PAL.pavers, cx, H + 0.02, cz, -Math.PI / 2, 0, 0, w, d, 1);
+  for (const [x, zz, bw, bd] of [[0, r.z0 - 0.35, w + 1.2, 0.5], [0, r.z1 + 0.35, w + 1.2, 0.5], [r.x0 - 0.35, cz, 0.5, d + 1.2], [r.x1 + 0.35, cz, 0.5, d + 1.2]]) {
+    B.solid.box('#e6dccb', x, H + 0.5, zz, bw, 1.0, bd);
+  }
+  // launch pad markings: a lighter runway strip pointing down the avenue
+  B.solid.add(PLANE, '#efe6d2', 0, H + 0.04, 8, -Math.PI / 2, 0, 0, 6, 26, 1);
+  for (let z = 24; z > -4; z -= 4) B.solid.add(PLANE, '#d8c9a8', 0, H + 0.05, z, -Math.PI / 2, 0, 0, 0.3, 2, 1);
+  // corner planters with trees, a couple of benches, rooftop gear at the back
+  for (const [x, zz] of [[-7.5, 27], [7.5, 27], [-7.5, -3.5], [7.5, -3.5]]) {
+    B.solid.box('#9a948a', x, H + 0.4, zz, 2.2, 0.8, 2.2);
+    tree(B, rng, x, zz, 0.55, H + 0.7);
+  }
+  B.solid.box('#8a5a3c', -6, H + 0.5, 12, 0.5, 0.5, 2.4);
+  B.solid.box('#8a5a3c', 6, H + 0.5, 12, 0.5, 0.5, 2.4);
+  B.solid.box('#b7bcc4', -5.5, H + 0.9, 24, 2.2, 1.6, 1.6);
+  B.solid.box('#b7bcc4', 5.5, H + 0.9, 24, 2.2, 1.6, 1.6);
+  // flagpole with a little paper-plane pennant
+  B.solid.add(CYL_LO, '#dfe3e8', 8.2, H + 4, 20, 0, 0, 0, 0.12, 8, 0.12);
+  B.solid.add(PRISM, '#e2574c', 7.0, H + 7.3, 20, 0, 0, -Math.PI / 2, 1.2, 2.2, 0.08);
+  // entrance canopy on the street side
+  B.solid.box('#e2574c', 0, 4.2, r.z0 - 1.6, 8, 0.3, 3.2);
+  B.solid.box('#8d5a3b', 0, 2, r.z0 - 0.05, 3, 4, 0.2);
 }
 
 function buildRiver(B: Batches, rng: Rng, i: number): void {
@@ -882,7 +919,7 @@ function buildRiver(B: Batches, rng: Rng, i: number): void {
   const W = 620;
   // water
   B.solid.add(PLANE, PAL.water, 0, -0.8, zc, -Math.PI / 2, 0, 0, W * 2, GRID.CHUNK, 1);
-  for (let n = 0; n < 40; n++) B.solid.add(PLANE, PAL.waterLight, rng.range(-W, W), -0.78, z1 - rng.range(2, GRID.CHUNK - 2), -Math.PI / 2, 0, 0, rng.range(4, 14), 0.5, 1);
+  for (let n = 0; n < 40; n++) B.solid.add(PLANE, PAL.waterLight, rng.range(-W, W), -0.74, z1 - rng.range(2, GRID.CHUNK - 2), -Math.PI / 2, 0, 0, rng.range(4, 14), 0.5, 1);
   // banks (walls along both chunk edges) + riverside promenade
   for (const zb of [z1, z0]) {
     B.solid.box('#a9a398', 0, -0.4, zb, W * 2, 0.9, 1.2);
@@ -921,9 +958,12 @@ function buildRiver(B: Batches, rng: Rng, i: number): void {
   }
 }
 
-export function districtGround(d: District): { ave: string; track: string; line: string; label: string } {
-  if (d === 'park' || d === 'oldtown') return { ave: PAL.pavers, track: PAL.paversTrack, line: '#f0e2c6', label: '#7a5a2a' };
-  if (d === 'river') return { ave: '#8b8f96', track: '#969aa1', line: '#b4b8bf', label: '#2f3238' };
-  if (d === 'industrial') return { ave: '#9a9690', track: '#a5a19b', line: '#bdb9b2', label: '#3a3733' };
-  return { ave: PAL.asphalt, track: PAL.asphaltTrack, line: PAL.asphaltLine, label: '#e8e4d8' };
+export interface GroundStyle { ave: string; track: string; line: string; lane: string; cross: string; label: string; labelStroke: string }
+
+/** Avenue surface per district. Markings are darker/lighter shades of the same surface so the track blends in. */
+export function districtGround(d: District): GroundStyle {
+  if (d === 'park' || d === 'oldtown') return { ave: PAL.pavers, track: PAL.paversTrack, line: '#c9b48c', lane: '#cdb78f', cross: '#b89d72', label: '#7d5f36', labelStroke: '#ead9b8' };
+  if (d === 'river') return { ave: '#8b8f96', track: '#969aa1', line: '#7a7e85', lane: '#a39f7a', cross: '#6e7279', label: '#4a4e55', labelStroke: '#aab0b8' };
+  if (d === 'industrial') return { ave: '#9a9690', track: '#a5a19b', line: '#87837d', lane: '#aaa07e', cross: '#7b7771', label: '#56524c', labelStroke: '#bdb9b2' };
+  return { ave: PAL.asphalt, track: PAL.asphaltTrack, line: '#5f6369', lane: '#b9a04a', cross: '#575b61', label: '#3e4147', labelStroke: '#9a9ea5' };
 }
