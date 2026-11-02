@@ -9,7 +9,7 @@ import type { FlightPlan } from './flightPlan';
 import type { ParticleSystem } from './particles';
 import { GeoBatch, PLANE, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture } from './geobatch';
 import { CityPlan, GRID, buildChunk, districtGround, type AnimatedObject, type Batches, type District } from './city';
-import { makeEventObject, type EventObject } from './events';
+import { DECOY_KINDS, makeEventObject, type EventObject } from './events';
 
 export const CHUNK = GRID.CHUNK;
 const AHEAD = 7;
@@ -26,6 +26,7 @@ interface Chunk {
   disposables: { dispose(): void }[];
   labels: { s: number; mat: THREE.MeshBasicMaterial; color: string }[];
   animated: AnimatedObject[];
+  decoys: EventObject[];
 }
 
 function fmtCash(v: number): string {
@@ -85,7 +86,8 @@ export class World {
     this.city = new CityPlan(params.seed);
     this.sky = this.buildSky();
     this.group.add(this.sky);
-    this.ensure(0, 4);
+    // build the whole look-ahead up front so the first seconds of flight never stall
+    this.ensure(0, AHEAD, Infinity);
   }
 
   get events(): EventObject[] { return this.eventObjects; }
@@ -129,16 +131,19 @@ export class World {
     }
   }
 
-  ensure(z: number, ahead = AHEAD): void {
+  /** Keep chunks around z; builds at most `budget` new chunks per call (one per frame in play). */
+  ensure(z: number, ahead = AHEAD, budget = 1): void {
     const idx = Math.max(0, Math.floor(-z / CHUNK));
-    for (let i = Math.max(-1, idx - 1); i <= idx + ahead; i++) {
-      if (!this.chunks.has(i)) this.buildChunk(i);
+    let built = 0;
+    for (let i = Math.max(-1, idx - 1); i <= idx + ahead && built < budget; i++) {
+      if (!this.chunks.has(i)) { this.buildChunk(i); built++; }
     }
     for (const [i, ch] of this.chunks) {
       if (i < idx - 2) {
         this.group.remove(ch.group);
         for (const d of ch.disposables) d.dispose();
         for (const a of ch.animated) a.dispose();
+        for (const d of ch.decoys) d.dispose();
         this.chunks.delete(i);
       }
     }
@@ -192,8 +197,25 @@ export class World {
       }
     }
 
-    // ---- ambient sky traffic
+    // ---- ambient sky traffic + filler obstacles that are not on the flight line
     this.addAmbient(group, animated, rng, i, district);
+    const decoys: EventObject[] = [];
+    if (i >= 0) {
+      const n = rng.int(this.params.quality === 'high' ? 2 : 1, this.params.quality === 'high' ? 4 : 2);
+      for (let d = 0; d < n; d++) {
+        const kind = rng.pick(DECOY_KINDS);
+        const grounded = kind === 'crane' || kind === 'billboard' || kind === 'pigeons' || kind === 'thermal' || kind === 'vent';
+        const h = grounded ? rng.range(10, 36) : rng.range(14, 75);
+        // fliers sit clearly off the centre line; grounded ones hug the kerbs like the real ones
+        const x = grounded ? rng.sign() * 0.5 : rng.sign() * rng.range(7, 34);
+        // never right beside the launcher
+        const ev = { t: Infinity, s: Math.max(i === 0 ? 46 : 0, -(z1 - rng.range(3, CHUNK - 3))), delta: -1, kind, lift: 0, x };
+        const eo = makeEventObject(ev, h, this.particles, true);
+        if (!grounded) eo.group.position.x = x; // the builders use e.x only as a small nudge; push fliers out to the side
+        decoys.push(eo);
+        group.add(eo.group);
+      }
+    }
 
     // ---- bake
     const solid = B.solid.build(this.mats.solid);
@@ -204,7 +226,7 @@ export class World {
     if (i < 0) group.position.z = CHUNK; // the mirrored chunk sits behind the launcher
 
     this.group.add(group);
-    this.chunks.set(i, { index: i, group, disposables, labels, animated });
+    this.chunks.set(i, { index: i, group, disposables, labels, animated, decoys });
   }
 
   private addAmbient(group: THREE.Group, animated: AnimatedObject[], rng: Rng, i: number, district: District): void {
@@ -314,15 +336,23 @@ export class World {
   }
 
   // ------------------------------------------------------------------ frame
-  update(dt: number, planeZ: number, cameraZ: number, cameraY: number): void {
+  update(dt: number, planeZ: number, cameraZ: number, cameraY: number, planTime: number): void {
     this.elapsed += dt;
     this.ensure(planeZ);
     this.sky.position.set(0, Math.max(0, cameraY - 60), cameraZ);
-    for (const [, ch] of this.chunks) for (const a of ch.animated) a.update(dt, this.elapsed);
+    for (const [, ch] of this.chunks) {
+      for (const a of ch.animated) a.update(dt, this.elapsed);
+      for (const d of ch.decoys) {
+        const dz = d.group.position.z - cameraZ;
+        d.group.visible = !(dz > -2 && dz < 3.5);
+        if (Math.abs(dz) < 450) d.update(dt, this.elapsed);
+      }
+    }
     for (const eo of this.eventObjects) {
       const dz = eo.group.position.z - cameraZ;
       eo.group.visible = !(dz > -2 && dz < 3.5);
-      if (Math.abs(eo.group.position.z - planeZ) < 400) eo.update(dt, this.elapsed);
+      eo.approach(eo.event.t - planTime);
+      if (Math.abs(eo.group.position.z - planeZ) < 450) eo.update(dt, this.elapsed);
     }
   }
 
@@ -331,6 +361,7 @@ export class World {
       this.group.remove(ch.group);
       for (const d of ch.disposables) d.dispose();
       for (const a of ch.animated) a.dispose();
+      for (const d of ch.decoys) d.dispose();
     }
     this.chunks.clear();
     for (const eo of this.eventObjects) eo.dispose();

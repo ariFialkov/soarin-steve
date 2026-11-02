@@ -16,6 +16,7 @@ const engine = new Engine(canvas, {
   onResult: r => ui.onResult(r),
   onError: m => ui.onError(m),
   onPull: p => ui.onPull(p),
+  onFumble: k => ui.onFumble(k),
 });
 ui.bind(engine);
 

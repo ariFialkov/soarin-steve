@@ -5,6 +5,7 @@ import { profile, resetProfile, saveProfile } from '../core/store';
 import { PLANES, planeById, planesForTier, type PlaneDef } from '../data/planes';
 import { audio } from '../game/audio';
 import type { Engine, GameState, HudInfo } from '../game/engine';
+import type { FumbleKind } from '../game/flightPlan';
 import { planeThumbSvg } from './planeThumb';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -76,6 +77,7 @@ export class UI {
       $('btn-back').classList.add('hidden-now');
       $('aim-hint').textContent = 'placing bet…';
     } else if (s === 'flying') {
+      $('fumble').classList.remove('show');
       this.setAimingHud(false);
       this.updateWallet();
       this.updateBoostBadge();
@@ -113,7 +115,8 @@ export class UI {
     $('r-payout').textContent = money(r.payout);
     const stamp = $('result-stamp');
     const m = r.multiplier;
-    stamp.textContent = m >= 10 ? 'INCREDIBLE!' : m >= 3 ? 'Big flight!' : m >= 1 ? 'Nice flight!' : m >= 0.5 ? 'Not bad' : 'Oof, a short hop';
+    stamp.textContent = this.lastFumble ? 'Bad release' : m >= 10 ? 'INCREDIBLE!' : m >= 3 ? 'Big flight!' : m >= 1 ? 'Nice flight!' : m >= 0.5 ? 'Not bad' : 'Oof, a short hop';
+    this.lastFumble = null;
     stamp.classList.toggle('big', m >= 1);
     $('r-fair').innerHTML = `
       <div>Round <code>${r.roundId}</code></div>
@@ -128,6 +131,26 @@ export class UI {
   }
 
   onError(msg: string): void { this.toast(msg); }
+
+  onFumble(kind: FumbleKind): void {
+    const sub: Record<FumbleKind, string[]> = {
+      edge: ['caught an edge', 'clipped the band', 'snagged a wingtip'],
+      fold: ['folded over itself', 'the nose crumpled', 'soft fold, hard luck'],
+      gust: ['a gust got under it', 'cross-wind on release', 'the wind had other plans'],
+      nosedive: ['straight into the asphalt', 'nose-heavy', 'too much dart, not enough glide'],
+    };
+    const el = $('fumble');
+    el.querySelector('.sub')!.textContent = sub[kind][Math.floor(Math.random() * sub[kind].length)];
+    this.lastFumble = kind;
+    clearTimeout(this.fumbleTimer);
+    // a beat after release, once the tumble has started
+    this.fumbleTimer = window.setTimeout(() => {
+      el.classList.add('show');
+      this.fumbleTimer = window.setTimeout(() => el.classList.remove('show'), 2600);
+    }, 350);
+  }
+  private lastFumble: FumbleKind | null = null;
+  private fumbleTimer = 0;
 
   private hideResult(): void { this.resultEl.classList.add('hidden'); }
 

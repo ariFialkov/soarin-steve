@@ -9,7 +9,7 @@ import { server, type RoundResult } from '../core/server';
 import { profile, saveProfile } from '../core/store';
 import { planeById, type PlaneDef } from '../data/planes';
 import { audio } from './audio';
-import { buildFlightPlan, sampleAt, type FlightPlan } from './flightPlan';
+import { buildFlightPlan, sampleAt, type FlightPlan, type FumbleKind } from './flightPlan';
 import { ParticleSystem } from './particles';
 import { buildPlaneModel, type PlaneModel } from './planeModel';
 import { World } from './world';
@@ -33,6 +33,7 @@ export interface EngineEvents {
   onResult(result: RoundResult): void;
   onError(msg: string): void;
   onPull(power: number): void;
+  onFumble(kind: FumbleKind): void;
 }
 
 interface Impulse { strength: number; remaining: number; duration: number }
@@ -90,6 +91,9 @@ export class Engine {
   private sparklerLit: { idx: number; age: number; stop: () => void }[] = [];
   private sparklerNext = 0;
 
+  // launch pre-roll: the plane leaves the band immediately while the bet resolves
+  private preroll: { t: number; v0: number; z0: number } | null = null;
+  private fumbleShown = false;
   private hud: HudInfo = { distance: 0, cash: 0, speed: 0, progress: 0, fanSeconds: 0, confetti: 0, sparklers: 0, litSparklers: 0 };
   private events: EngineEvents;
   private tmpV = new THREE.Vector3();
@@ -290,7 +294,7 @@ export class Engine {
   private resetRound(): void {
     this.plan = null; this.result = null; this.tau = 0; this.flightClock = 0;
     this.impulses = []; this.lift = 0; this.liftVel = 0; this.lateral = 0; this.lateralVel = 0;
-    this.bonk = 0; this.landedAt = -1; this.resultSent = false;
+    this.bonk = 0; this.landedAt = -1; this.resultSent = false; this.preroll = null; this.fumbleShown = false;
     this.fanActive = false; this.fanModel.visible = false; this.fanHum?.stop(); this.fanHum = null;
     for (const s of this.sparklerLit) s.stop();
     this.sparklerLit = []; this.sparklerNext = 0; this.sparklerNextTotal = 0;
@@ -308,6 +312,10 @@ export class Engine {
   private async launch(power: number): Promise<void> {
     if (!this.plane || !this.world) return;
     this.setState('betting');
+    this.preroll = { t: 0, v0: (0.45 + 0.55 * power) * 75, z0: this.plane.group.position.z };
+    this.updateBands(0);
+    audio.whoosh(0.7, 0.8, 1.1);
+    this.particles.emit({ pos: new THREE.Vector3(0, 1.6, 0.5), vel: new THREE.Vector3(0, 0.5, 2), spread: 2, count: 14, life: 0.5, size: 0.14, endSize: 0, colors: ['#ffffff', '#fff3c4'], drag: 2 });
     const boosts = { ...profile.boosts };
     let result: RoundResult;
     try {
@@ -315,6 +323,7 @@ export class Engine {
       result = await server.placeBet({ tier: profile.tier, planeId: this.planeDef.id, boosts, clientSeed: profile.clientSeed });
     } catch (e) {
       this.events.onError((e as Error).message);
+      this.preroll = null;
       this.placePlaneOnLauncher();
       this.setState('aiming');
       return;
@@ -334,11 +343,16 @@ export class Engine {
     this.cashPerUnit = result.payout / plan.L;
     this.world.setPlan(plan, this.cashPerUnit);
     this.updateSparklerVisibility();
-    this.tau = 0;
+    // pick up the plan at the distance the pre-roll has already covered, so there is no jump
+    const covered = this.preroll ? Math.max(0, this.preroll.z0 - this.plane.group.position.z) : 0;
+    this.preroll = null;
+    let tau = 0;
+    while (tau < plan.T && sampleAt(plan.s, plan.dt, tau) < covered) tau += plan.dt;
+    this.tau = Math.min(tau, plan.T);
     this.flightClock = 0;
-    audio.whoosh(0.7, 0.8, 1.1);
-    this.particles.emit({ pos: new THREE.Vector3(0, 1.6, 0.5), vel: new THREE.Vector3(0, 0.5, 2), spread: 2, count: 14, life: 0.5, size: 0.14, endSize: 0, colors: ['#ffffff', '#fff3c4'], drag: 2 });
+    this.fumbleShown = false;
     this.setState('flying');
+    if (plan.fumble) this.events.onFumble(plan.fumble);
   }
 
   // ---------------------------------------------------------------- input
@@ -460,11 +474,12 @@ export class Engine {
     const dt = Math.min(0.05, this.clock.getDelta());
     this.menuTime += dt;
     if (this.state === 'menu') this.updateMenu(dt);
-    else if (this.state === 'aiming' || this.state === 'betting') this.updateAiming(dt);
+    else if (this.state === 'aiming') this.updateAiming(dt);
+    else if (this.state === 'betting') this.updatePreroll(dt);
     else this.updateFlight(dt);
 
     const pz = this.plane ? this.plane.group.position.z : 0;
-    this.world?.update(dt, pz, this.camera.position.z, this.camera.position.y);
+    this.world?.update(dt, pz, this.camera.position.z, this.camera.position.y, this.tau);
     this.particles.update(dt, this.camera);
     if (this.plane) {
       const p = this.plane.group.position;
@@ -503,6 +518,25 @@ export class Engine {
     const target = new THREE.Vector3(0, 2.9, 5.4 + p * 1.4);
     this.camera.position.lerp(target, Math.min(1, dt * 4));
     this.camera.lookAt(0, 1.7, -7);
+  }
+
+  /** While the bet resolves the plane is already off the band and climbing; the plan takes over seamlessly. */
+  private updatePreroll(dt: number): void {
+    if (!this.plane || !this.preroll) return;
+    const p = this.preroll;
+    p.t += dt;
+    const g = this.plane.group;
+    g.position.z = p.z0 - p.v0 * p.t;
+    g.position.y = 1.8 + p.t * p.v0 * 0.12;
+    g.rotation.set(0.1 + 0.12 * Math.min(1, p.t * 4), 0, 0);
+    this.plane.body.position.set(0, 0, 0);
+    this.plane.body.rotation.set(0, 0, 0);
+    const vNorm = Math.min(1, p.v0 / 60);
+    const targetY = g.position.y + 2.4 + vNorm * 2.2;
+    this.camY += (targetY - this.camY) * Math.min(1, dt * 3);
+    this.camera.position.set(0, this.camY, g.position.z + 7 + vNorm * 5);
+    const lookY = (this.camY - 1.6 - vNorm * 1.2) * 0.45 + g.position.y * 0.55;
+    this.camera.lookAt(0, lookY, g.position.z - 14);
   }
 
   private updateFlight(dt: number): void {
@@ -585,6 +619,17 @@ export class Engine {
     const air = grounded ? Math.max(0, 1 - (this.tau - plan.landT) / 0.3) : 1;
     sx = (sx + wind) * air; sy *= air; roll *= air; yaw *= air; pitch *= air;
     if (this.bonk > 0) { roll += Math.sin(this.bonk * 30) * 0.35 * this.bonk; sy -= this.bonk * 0.3; }
+    if (plan.fumble) {
+      // the plane catches an edge and tumbles: spin up over the first second, then flop onto the ground
+      const u = Math.min(1, t / Math.max(0.3, plan.landT));
+      if (!this.fumbleShown && t > 0.2) { this.fumbleShown = true; audio.bonk(); }
+      const spin = u * u * 8;
+      if (plan.fumble === 'fold') { pitch += spin * 0.8; roll += Math.sin(t * 12) * 0.3 * u; }
+      else if (plan.fumble === 'gust') { roll += spin; yaw += Math.sin(t * 5) * 0.6 * u; sx += Math.sin(t * 3) * 1.5 * u; }
+      else if (plan.fumble === 'nosedive') { pitch -= spin * 0.6; yaw += spin * 0.3; }
+      else { roll += spin * 1.2; pitch += Math.sin(t * 9) * 0.4 * u; }
+      if (grounded) { roll = Math.PI * 0.9 + Math.sin(this.tau * 6) * 0.05 * speedFrac; pitch = 0.15; }
+    }
 
     // ---- place the plane
     const g = this.plane.group;
@@ -594,10 +639,13 @@ export class Engine {
     const body = this.plane.body;
     body.position.set(sx + this.lateral, sy, 0);
     body.rotation.set(0, yaw - this.lateral * 0.15, roll - (sx + this.lateral) * 0.25);
-    if (grounded) {
+    if (grounded && !plan.fumble) {
       // skid along the ground
       body.rotation.z = Math.sin(this.tau * 2) * 0.05 * speedFrac;
       g.rotation.x = 0.03;
+    } else if (grounded) {
+      body.rotation.set(pitch, yaw, roll);
+      g.rotation.x = 0;
     }
 
     // ---- sparklers (visual jets)

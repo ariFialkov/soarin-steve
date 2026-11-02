@@ -14,10 +14,18 @@ export interface EventObject {
   group: THREE.Group;
   triggered: boolean;
   age: number;
+  decoy: boolean;
   update(dt: number, elapsed: number): void;
+  /** Called with the time remaining until the trigger; fliers use it to glide in from the side. */
+  approach(timeToTrigger: number): void;
   trigger(): void;
   dispose(): void;
 }
+
+/** Kinds that can be scattered as harmless filler along the route. */
+export const DECOY_KINDS: PlanEvent['kind'][] = ['gulls', 'hotair', 'drone', 'blimp', 'raincloud', 'kite', 'crane', 'billboard', 'pigeons', 'burner', 'thermal', 'vent'];
+/** Fliers that enter from the side before their moment (so they never pop in). */
+const FLY_IN = new Set<PlanEvent['kind']>(['gulls', 'drone']);
 
 const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 
@@ -83,10 +91,11 @@ function gull(mk: (c: string) => THREE.Material): { g: THREE.Group; wl: THREE.Me
   return { g, wl, wr };
 }
 
-export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSystem): EventObject {
+export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSystem, decoy = false): EventObject {
   const group = new THREE.Group();
   const z = -e.s;
   group.position.set(0, 0, z);
+  const flyIn = !decoy && FLY_IN.has(e.kind);
   const mats: THREE.Material[] = [];
   const mk = (c: string, extra: Partial<THREE.MeshLambertMaterialParameters> = {}): THREE.Material => {
     const m = new THREE.MeshLambertMaterial({ color: c, ...extra });
@@ -95,13 +104,22 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
   };
   let update: (dt: number, elapsed: number) => void = () => {};
   let onTrigger: () => void = () => {};
+  const side = e.x >= 0 ? 1 : -1;
   const self: EventObject = {
-    event: e, group, triggered: false, age: -1,
+    event: e, group, triggered: false, age: -1, decoy,
     update(dt, elapsed) { if (this.triggered) this.age += dt; update(dt, elapsed); },
+    approach(ttt) {
+      if (!flyIn || this.triggered) { if (flyIn) group.position.x = 0; return; }
+      // fully off to the side 2.2 s out, in position 0.3 s before the moment
+      const k = Math.min(1, Math.max(0, (ttt - 0.3) / 1.9));
+      const ease = k * k * (3 - 2 * k);
+      group.position.x = side * 70 * ease;
+      group.position.y = 12 * ease;
+    },
     trigger() { if (this.triggered) return; this.triggered = true; this.age = 0; onTrigger(); },
     dispose() { for (const m of mats) m.dispose(); },
   };
-  const side = e.x >= 0 ? 1 : -1;
+  if (flyIn) { group.position.x = side * 70; group.position.y = 12; }
 
   switch (e.kind) {
     // ───────────────────────── boosts ─────────────────────────
@@ -196,8 +214,8 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
       break;
     }
     case 'thermal': {
-      // a shimmering column of warm air rising off a dark rooftop: leaves and dust spiral up
-      const roof = mesh(BOX, mk('#2f3338'), side * 4.5, 0.4, 0, 9, 0.8, 9);
+      // a shimmering column of warm air rising off a sun-baked patch of fresh tarmac: leaves and dust spiral up
+      const roof = mesh(DISC, mk('#4a4d52'), side * 4.5, 0.06, 0, 7, 9, 1, -Math.PI / 2);
       group.add(roof);
       update = (dt) => {
         const strong = self.triggered && self.age < 2.4;

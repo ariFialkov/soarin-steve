@@ -128,8 +128,8 @@ class MockServer {
     this.balance = round2(this.balance - totalWager + payout);
     save(WALLET_KEY, this.balance);
 
-    // simulate a network hop so the UI shows its "placing bet" state
-    await new Promise(r => setTimeout(r, 120));
+    // (a real server would add a network round trip here; the client keeps the
+    // plane moving while it waits, see Engine.launch)
 
     return {
       roundId: randomHex(8),

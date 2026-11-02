@@ -14,6 +14,8 @@ export type EventKind =
   | 'gulls' | 'pigeons' | 'hotair' | 'propplane' | 'blimp' | 'crane' | 'billboard' | 'bunting'  // obstacles
   | 'kite' | 'drone' | 'raincloud';
 
+export type FumbleKind = 'edge' | 'fold' | 'gust' | 'nosedive';
+
 export interface PlanEvent {
   t: number;          // plan time
   s: number;          // distance along track (world units) where it happens
@@ -35,6 +37,8 @@ export interface FlightPlan {
   h: Float32Array;
   landT: number;      // time the plane touches down
   unitsPerMetre: number;
+  /** Set for very short results: the plane fumbles on release instead of meeting obstacles. */
+  fumble: FumbleKind | null;
 }
 
 /** Boost / obstacle kinds, with the altitude band each one makes sense at. */
@@ -43,7 +47,7 @@ const BOOSTS: { kind: EventKind; minH: number; maxH: number }[] = [
   { kind: 'fountain', minH: 0, maxH: 26 },
   { kind: 'thermal', minH: 0, maxH: 40 },
   { kind: 'burner', minH: 12, maxH: 999 },
-  { kind: 'firework', minH: 8, maxH: 999 },
+  { kind: 'firework', minH: 3, maxH: 999 },
   { kind: 'jetwash', minH: 20, maxH: 999 },
 ];
 const OBSTACLES: { kind: EventKind; minH: number; maxH: number }[] = [
@@ -53,12 +57,19 @@ const OBSTACLES: { kind: EventKind; minH: number; maxH: number }[] = [
   { kind: 'billboard', minH: 6, maxH: 30 },
   { kind: 'crane', minH: 8, maxH: 45 },
   { kind: 'drone', minH: 4, maxH: 999 },
-  { kind: 'gulls', minH: 6, maxH: 999 },
+  { kind: 'gulls', minH: 3, maxH: 999 },
   { kind: 'hotair', minH: 14, maxH: 999 },
   { kind: 'propplane', minH: 14, maxH: 999 },
   { kind: 'raincloud', minH: 18, maxH: 999 },
   { kind: 'blimp', minH: 24, maxH: 999 },
 ];
+
+/** Kinds that can appear close to the launcher: they fly in or launch from the ground, so they never pop into view. */
+const NEAR_OK = new Set<EventKind>(['gulls', 'drone', 'propplane', 'jetwash', 'firework']);
+/** Static structures must sit deep in the haze at launch time (world units from the launcher). */
+const STATIC_MIN_S = 230;
+/** Results shorter than this become a "bad release" fumble with no obstacles at all. */
+export const FUMBLE_L = 110;
 
 /** Compress very long distances so the world stays a sensible size. */
 export function worldLength(distanceMetres: number): number {
@@ -77,6 +88,8 @@ export function buildFlightPlan(opts: {
   const rng = new Rng(opts.seed + ':plan');
   const L = Math.max(1.5, worldLength(opts.distanceMetres));
   const unitsPerMetre = L / opts.distanceMetres;
+
+  if (L < FUMBLE_L) return buildFumblePlan(rng, L, opts.power, unitsPerMetre);
 
   // Launch speed from the pull (visual flavour). Duration follows from it so
   // that a plain linear decay would stop exactly at L.
@@ -211,14 +224,66 @@ export function buildFlightPlan(opts: {
   for (const e of events) {
     const h = hArr[Math.min(N - 1, Math.round(e.t / dt))];
     const table = e.delta > 0 ? BOOSTS : OBSTACLES;
-    let options = table.filter(o => h >= o.minH && h <= o.maxH && o.kind !== lastKind);
-    if (!options.length) options = table.filter(o => h >= o.minH && h <= o.maxH);
-    if (!options.length) options = table;
+    const allowed = table.filter(o => e.s >= STATIC_MIN_S || NEAR_OK.has(o.kind));
+    let options = allowed.filter(o => h >= o.minH && h <= o.maxH && o.kind !== lastKind);
+    if (!options.length) options = allowed.filter(o => h >= o.minH && h <= o.maxH);
+    if (!options.length) options = allowed.filter(o => NEAR_OK.has(o.kind));
     e.kind = rng.pick(options).kind;
     lastKind = e.kind;
   }
 
-  return { L, T, v0, events, dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre };
+  return { L, T, v0, events, dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre, fumble: null };
+}
+
+/**
+ * A fumbled launch: the plane leaves the band at full speed, catches an edge
+ * (or folds, or meets a gust) within the first second, tumbles and drops. No
+ * obstacles are needed, so nothing has to be spawned in front of the player.
+ */
+function buildFumblePlan(rng: Rng, L: number, power: number, unitsPerMetre: number): FlightPlan {
+  const kind = rng.pick<FumbleKind>(['edge', 'fold', 'gust', 'nosedive']);
+  const v0 = (0.45 + 0.55 * power) * 75;
+  // speed: brief full-speed burst, then a hard brake while tumbling, then a skid to exactly L
+  const T = Math.max(2.6, Math.min(4.5, 1.2 + L / 18));
+  const dt = 1 / 60;
+  const N = Math.ceil(T / dt) + 2;
+  const sArr = new Float32Array(N), vArr = new Float32Array(N), hArr = new Float32Array(N);
+  const tBurst = Math.min(0.35, T * 0.12);
+  const landT = Math.min(T * 0.62, 1.6);
+  // shape v(t): v0 during the burst, exponential-ish decay to the touchdown, then linear skid to zero at T.
+  // Scale the whole curve so the integral is exactly L.
+  const raw = new Float32Array(N);
+  let integral = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i * dt;
+    let v: number;
+    if (t < tBurst) v = v0;
+    else if (t < landT) v = v0 * Math.exp(-(t - tBurst) * 3.2);
+    else v = v0 * Math.exp(-(landT - tBurst) * 3.2) * Math.max(0, 1 - (t - landT) / (T - landT));
+    raw[i] = v;
+    if (i > 0) integral += (raw[i - 1] + raw[i]) / 2 * dt;
+  }
+  const k = L / Math.max(1e-6, integral);
+  let s = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i * dt;
+    vArr[i] = t >= T ? 0 : raw[i] * k;
+    sArr[i] = Math.min(L, s);
+    if (i < N - 1) s += (raw[i] + raw[i + 1]) / 2 * dt * k;
+  }
+  sArr[N - 1] = L; vArr[N - 1] = 0;
+  // height: a short hop up, then a tumble to the ground
+  const peak = kind === 'nosedive' ? 2.6 : 4.5 + power * 2;
+  for (let i = 0; i < N; i++) {
+    const t = i * dt;
+    let h: number;
+    if (t < landT) {
+      const u = t / landT;
+      h = 1.8 + peak * Math.sin(Math.PI * Math.min(1, u * 1.1)) * (1 - u * 0.35) - u * u * 1.5;
+    } else h = 0.3;
+    hArr[i] = Math.max(0.3, h);
+  }
+  return { L, T, v0: v0 * k, events: [], dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre, fumble: kind };
 }
 
 export function sampleAt(arr: Float32Array, dt: number, t: number): number {
