@@ -210,7 +210,7 @@ export class World {
       for (let d = 0; d < n; d++) {
         const kind = rng.pick(DECOY_KINDS);
         const grounded = kind === 'crane' || kind === 'billboard' || kind === 'pigeons' || kind === 'thermal' || kind === 'vent';
-        const h = grounded ? rng.range(10, 36) : rng.range(14, 75);
+        const h = kind === 'pigeons' ? rng.range(6, 13) : kind === 'billboard' ? rng.range(10, 26) : grounded ? rng.range(16, 40) : rng.range(14, 75);
         // fliers sit clearly off the centre line; grounded ones hug the kerbs like the real ones
         const x = grounded ? rng.sign() * 0.5 : rng.sign() * rng.range(7, 34);
         // never right beside the launcher
