@@ -352,7 +352,7 @@ export class World {
   }
 
   // ------------------------------------------------------------------ frame
-  update(dt: number, planeZ: number, cameraZ: number, cameraY: number, planTime: number): void {
+  update(dt: number, planeZ: number, cameraZ: number, cameraY: number, planTime: number, hideNearCamera = true): void {
     this.elapsed += dt;
     this.ensure(planeZ);
     this.sky.position.set(0, Math.max(0, cameraY - 60), cameraZ);
@@ -360,13 +360,13 @@ export class World {
       for (const a of ch.animated) a.update(dt, this.elapsed);
       for (const d of ch.decoys) {
         const dz = d.group.position.z - cameraZ;
-        d.group.visible = !(dz > -2 && dz < 3.5);
+        d.group.visible = !hideNearCamera || !(dz > -2 && dz < 3.5);
         if (Math.abs(dz) < 450) d.update(dt, this.elapsed);
       }
     }
     for (const eo of this.eventObjects) {
       const dz = eo.group.position.z - cameraZ;
-      eo.group.visible = !(dz > -2 && dz < 3.5);
+      eo.group.visible = !hideNearCamera || !(dz > -2 && dz < 3.5);
       eo.approach(eo.event.t - planTime);
       if (Math.abs(eo.group.position.z - planeZ) < 450) eo.update(dt, this.elapsed);
     }

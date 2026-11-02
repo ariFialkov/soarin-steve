@@ -481,7 +481,7 @@ export class Engine {
     else this.updateLanded(dt);
 
     const pz = this.steve ? this.steve.group.position.z : 0;
-    this.world?.update(dt, pz, this.camera.position.z, this.camera.position.y, this.tau);
+    this.world?.update(dt, pz, this.camera.position.z, this.camera.position.y, this.tau, this.state === 'flying' || this.state === 'betting');
     this.particles.update(dt, this.camera);
     this.steve?.update(dt, this.menuTime);
     if (this.steve) {
@@ -795,8 +795,9 @@ export class Engine {
     this.landOrbit += dt * 0.35;
     const r = 7.5;
     const cx = Math.sin(this.landOrbit) * r, cz = g.position.z + Math.cos(this.landOrbit) * r;
-    this.camera.position.lerp(this.tmpV3.set(cx, g.position.y + 3.2, cz), Math.min(1, dt * 2.5));
-    this.camera.lookAt(0, g.position.y + 1.2, g.position.z);
+    // frame Steve in the upper half so the result card never covers him
+    this.camera.position.lerp(this.tmpV3.set(cx, g.position.y + 3.4, cz), Math.min(1, dt * 2.5));
+    this.camera.lookAt(0, g.position.y - 0.8, g.position.z);
 
     if (!this.resultSent && T > done) {
       this.resultSent = true;
