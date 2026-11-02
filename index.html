@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#f6efe3" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="description" content="Pull back, let go, and watch your paper plane ride the wind." />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <title>Paper Planes</title>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <div id="ui">
+      <!-- ───────── Menu ───────── -->
+      <div id="menu" class="layer">
+        <div class="title-wrap">
+          <h1 class="title"><span>Paper</span> <span>Planes</span></h1>
+          <div class="subtitle">pull back · let go · ride the wind</div>
+        </div>
+
+        <div class="edge edge-left">
+          <button class="tag" id="btn-hangar"><span class="ico">✈</span><span>Hangar</span></button>
+          <button class="tag" id="btn-boosts"><span class="ico">🎉</span><span>Boosts</span><span class="pill" id="boost-count" hidden>0</span></button>
+        </div>
+
+        <div class="edge edge-right">
+          <div class="wallet paper-chip"><span class="lbl">Wallet</span><span id="wallet">$0</span></div>
+          <div class="tier-picker" id="tier-picker"></div>
+          <button class="tag small" id="btn-settings"><span class="ico">⚙</span><span>Settings</span></button>
+        </div>
+
+        <div class="tap-hint">tap anywhere to play</div>
+      </div>
+
+      <!-- ───────── Game HUD ───────── -->
+      <div id="hud" class="layer hidden">
+        <div class="hud-top">
+          <button class="tag small" id="btn-back"><span class="ico">←</span><span>Menu</span></button>
+          <div class="score paper-chip">
+            <div class="dist"><span id="hud-dist">0</span><small> m</small></div>
+            <div class="cash" id="hud-cash">$0.00</div>
+          </div>
+          <div class="wager paper-chip">
+            <span class="lbl">Wager</span><span id="hud-wager">$1.00</span>
+            <span class="lbl" id="hud-plane">The Basic Dart</span>
+          </div>
+        </div>
+
+        <div class="aim-hint" id="aim-hint">
+          <div class="pull-meter"><div class="pull-fill" id="pull-fill"></div></div>
+          <div>pull the plane back, then let go</div>
+        </div>
+
+        <div class="boost-bar" id="boost-bar">
+          <button class="boost" data-kind="fan"><span class="ico">🌀</span><span class="name">Fan</span><span class="qty" id="q-fan">0s</span></button>
+          <button class="boost" data-kind="confetti"><span class="ico">🎉</span><span class="name">Confetti</span><span class="qty" id="q-confetti">×0</span></button>
+          <button class="boost" data-kind="sparkler"><span class="ico">✨</span><span class="name">Sparkler</span><span class="qty" id="q-sparkler">×0</span></button>
+        </div>
+        <div class="boost-hint" id="boost-hint"></div>
+      </div>
+
+      <!-- ───────── Result ───────── -->
+      <div id="result" class="modal hidden">
+        <div class="paper sheet result-sheet">
+          <div class="stamp" id="result-stamp">Nice flight!</div>
+          <div class="result-grid">
+            <div><span class="lbl">Distance</span><strong id="r-dist">0 m</strong></div>
+            <div><span class="lbl">Multiplier</span><strong id="r-mult">0.00×</strong></div>
+            <div><span class="lbl">Wager</span><strong id="r-wager">$0</strong></div>
+            <div class="payout"><span class="lbl">Payout</span><strong id="r-payout">$0</strong></div>
+          </div>
+          <details class="fair">
+            <summary>Fairness details</summary>
+            <div id="r-fair"></div>
+          </details>
+          <div class="row">
+            <button class="tag primary" id="btn-again"><span class="ico">↻</span><span>Fly again</span></button>
+            <button class="tag" id="btn-result-menu"><span class="ico">⌂</span><span>Menu</span></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ───────── Panels ───────── -->
+      <div id="panel" class="modal hidden">
+        <div class="paper sheet panel-sheet">
+          <button class="close" id="panel-close" aria-label="Close">×</button>
+          <div id="panel-body"></div>
+        </div>
+      </div>
+
+      <div id="toast" class="toast"></div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
