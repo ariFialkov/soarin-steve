@@ -23,7 +23,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
   easy: {
     label: 'Easy',
     stake: 1,
-    baseDistance: 60,
+    baseDistance: 420,
     maxMultiplier: 20,
     accent: '#7bc96f',
     buckets: [
@@ -37,7 +37,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
   medium: {
     label: 'Medium',
     stake: 5,
-    baseDistance: 90,
+    baseDistance: 620,
     maxMultiplier: 50,
     accent: '#5fb8e6',
     buckets: [
@@ -52,7 +52,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
   hard: {
     label: 'Hard',
     stake: 20,
-    baseDistance: 130,
+    baseDistance: 880,
     maxMultiplier: 150,
     accent: '#f3a35c',
     buckets: [
@@ -67,7 +67,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
   expert: {
     label: 'Expert',
     stake: 100,
-    baseDistance: 180,
+    baseDistance: 1200,
     maxMultiplier: 500,
     accent: '#e5679a',
     buckets: [

@@ -98,20 +98,23 @@ export class Engine {
   constructor(canvas: HTMLCanvasElement, events: EngineEvents) {
     this.events = events;
     const high = profile.quality === 'high';
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: high, powerPreference: 'high-performance' });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: high, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, high ? 2 : 1.25));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
 
-    this.scene.background = new THREE.Color('#bfe3ff');
-    this.scene.fog = new THREE.Fog('#cfe9ff', 60, 260);
-    this.camera = new THREE.PerspectiveCamera(58, 1, 0.1, 700);
+    this.scene.background = new THREE.Color('#d6ebfa');
+    this.scene.fog = new THREE.Fog('#d6ebfa', 150, 520);
+    this.camera = new THREE.PerspectiveCamera(58, 1, 0.2, 2600);
 
-    const hemi = new THREE.HemisphereLight('#e8f6ff', '#79b85c', 1.1);
-    const sun = new THREE.DirectionalLight('#fff4d6', 1.6);
-    sun.position.set(-20, 40, -10);
-    this.scene.add(hemi, sun);
+    const hemi = new THREE.HemisphereLight('#e8f6ff', '#9a9a8a', 1.05);
+    const sun = new THREE.DirectionalLight('#fff4d6', 1.7);
+    sun.position.set(-30, 50, -25);
+    // soft fill from below so the paper's underside never goes muddy when the plane climbs
+    const fill = new THREE.DirectionalLight('#e8f0ff', 0.55);
+    fill.position.set(10, -30, 20);
+    this.scene.add(hemi, sun, fill);
 
     this.particles = new ParticleSystem(high ? 1200 : 600);
     this.scene.add(this.particles.mesh);
@@ -461,14 +464,14 @@ export class Engine {
     else this.updateFlight(dt);
 
     const pz = this.plane ? this.plane.group.position.z : 0;
-    this.world?.update(dt, pz, this.camera.position.z);
+    this.world?.update(dt, pz, this.camera.position.z, this.camera.position.y);
     this.particles.update(dt, this.camera);
     if (this.plane) {
       const p = this.plane.group.position;
       this.blob.position.set(p.x + this.plane.body.position.x * 1.6, 0.03, p.z);
-      const s = Math.max(0.5, 1.6 - p.y * 0.05);
+      const s = Math.max(0.5, 1.6 - p.y * 0.02);
       this.blob.scale.set(s * 1.3, s, 1);
-      (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.16 * Math.max(0.2, 1 - p.y / 30);
+      (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.16 * Math.max(0, 1 - p.y / 40);
     }
     this.renderer.render(this.scene, this.camera);
   }
@@ -586,7 +589,7 @@ export class Engine {
     // ---- place the plane
     const g = this.plane.group;
     g.position.set(0, h + this.lift * 0.8, -s);
-    const slope = Math.atan2(hNext - h, Math.max(0.05, 0.15 * Math.max(0.5, v)));
+    const slope = THREE.MathUtils.clamp(Math.atan2(hNext - h, Math.max(0.05, 0.15 * Math.max(0.5, v))), -0.5, 0.5);
     g.rotation.set(slope * 0.8 + pitch, 0, 0);
     const body = this.plane.body;
     body.position.set(sx + this.lateral, sy, 0);
@@ -609,14 +612,17 @@ export class Engine {
     this.sparklerLit = this.sparklerLit.filter(sp => sp.age < 1.6);
 
     // ---- camera: fixed on the centre line, smooth in height, trailing behind
-    const targetY = g.position.y + 2.2;
-    this.camY += (targetY - this.camY) * Math.min(1, dt * 1.6);
-    const back = 6.2 + speedFrac * 1.6;
+    const vNorm = Math.min(1, v / 60);
+    const targetY = g.position.y + 2.4 + vNorm * 2.2;
+    this.camY += (targetY - this.camY) * Math.min(1, dt * 3);
+    const back = 7 + vNorm * 5;
     this.camera.position.set(0, this.camY, g.position.z + back);
-    this.camera.lookAt(0, this.camY - 1.4, g.position.z - 10);
+    // look a little past the plane, but keep the plane itself in the upper-middle of the frame
+    const lookY = (this.camY - 1.6 - vNorm * 1.2) * 0.45 + g.position.y * 0.55;
+    this.camera.lookAt(0, lookY, g.position.z - 14);
 
     // launcher fades out of relevance once we are away
-    this.launcher.visible = s < 60;
+    this.launcher.visible = s < 80;
 
     // ---- HUD
     const progress = s / plan.L;

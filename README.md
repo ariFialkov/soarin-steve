@@ -35,9 +35,12 @@ visit it works offline.
      the **expected multiplier is exactly the configured RTP**,
    - returns the payout, the distance (`multiplier × tier base distance`) and a world seed.
 3. Only then does the client build a flight plan (`src/game/flightPlan.ts`): a precomputed
-   position/velocity/height curve that ends at that distance, with boost pads and obstacles
-   placed where the curve speeds up or slows down. The scenery explains the result; it never
-   decides it.
+   position/velocity/height curve that ends at that distance, with boosts and obstacles placed
+   where the curve speeds up or slows down. Obstacles are chosen to suit the plane's altitude at
+   that point (bunting and pigeons low down, cranes and billboards mid-height, gulls, hot-air
+   balloons, banner planes, blimps and airliners up high) and never spawn within the first fifth
+   of the flight, so they appear out of the haze among the city's ordinary sky traffic rather
+   than popping in next to the launcher. The scenery explains the result; it never decides it.
 4. Mid-flight boosts (fan, confetti cannon, sparklers) only change the *rate* at which the
    plan is played back, scaled by how fast the plane is already going. A stopped plane cannot
    be moved. The end point cannot change.
@@ -59,9 +62,23 @@ client seed and the nonce, and the result card re-verifies the outcome from them
 `npm test` checks that the expected multiplier of every tier equals the configured RTP, and that
 flight plans always end exactly at the resolved distance.
 
+## The city
+
+`src/game/city.ts` generates an endless city along the avenue the plane flies over. It is laid out
+on a fixed grid (avenue, cross streets every block, five side streets each way) so nothing is ever
+placed in a road. Districts follow a seeded random walk: suburbs, residential blocks, commercial
+strips, downtown towers, parks, a river crossing with a bridge, industrial yards and an old town,
+with landmarks (clock tower, cathedral, stadium, a turning ferris wheel, obelisk plaza, triumphal
+arch over the avenue, domed hall, radio mast, water tower) every few blocks. Each chunk is baked
+into three merged meshes (plain, windowed, glass) so the whole view stays at a couple of hundred
+draw calls. The cash track is painted down the avenue in a slightly different shade of whatever
+the avenue is made of in that district.
+
 ## Planes
 
-58 planes across four folding tiers (Easy $1, Medium $5, Hard $20, Expert $100). Each tier has a
+58 planes across four folding tiers (Easy $1, Medium $5, Hard $20, Expert $100). A 1.00× flight
+crosses roughly 420 m of city on Easy up to 1.2 km on Expert; longer flights are compressed
+logarithmically so even a 500× result fits in one sitting. Each tier has a
 free default plane; the rest are bought from the wallet. Names, tiers and trait tags follow the
 public-domain catalogue at [Fold 'N' Fly](https://www.foldnfly.com), credited in-game under
 Settings → Credits. Models are generated procedurally from eight silhouettes with paper textures,

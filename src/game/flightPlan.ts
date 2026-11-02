@@ -10,8 +10,9 @@ import { Rng } from '../core/rng';
 import type { FlightStyle } from '../data/planes';
 
 export type EventKind =
-  | 'fan' | 'geyser' | 'balloon' | 'trampoline' | 'gust'   // boosts
-  | 'tree' | 'bird' | 'kite' | 'pole' | 'bush';             // obstacles
+  | 'vent' | 'fountain' | 'burner' | 'firework' | 'jetwash' | 'thermal'                       // boosts
+  | 'gulls' | 'pigeons' | 'hotair' | 'propplane' | 'blimp' | 'crane' | 'billboard' | 'bunting'  // obstacles
+  | 'kite' | 'drone' | 'raincloud';
 
 export interface PlanEvent {
   t: number;          // plan time
@@ -36,14 +37,34 @@ export interface FlightPlan {
   unitsPerMetre: number;
 }
 
-const BOOSTS: EventKind[] = ['fan', 'geyser', 'balloon', 'trampoline', 'gust'];
-const OBSTACLES: EventKind[] = ['tree', 'bird', 'kite', 'pole', 'bush'];
+/** Boost / obstacle kinds, with the altitude band each one makes sense at. */
+const BOOSTS: { kind: EventKind; minH: number; maxH: number }[] = [
+  { kind: 'vent', minH: 0, maxH: 18 },
+  { kind: 'fountain', minH: 0, maxH: 26 },
+  { kind: 'thermal', minH: 0, maxH: 40 },
+  { kind: 'burner', minH: 12, maxH: 999 },
+  { kind: 'firework', minH: 8, maxH: 999 },
+  { kind: 'jetwash', minH: 20, maxH: 999 },
+];
+const OBSTACLES: { kind: EventKind; minH: number; maxH: number }[] = [
+  { kind: 'bunting', minH: 0, maxH: 11 },
+  { kind: 'pigeons', minH: 3, maxH: 16 },
+  { kind: 'kite', minH: 4, maxH: 40 },
+  { kind: 'billboard', minH: 6, maxH: 30 },
+  { kind: 'crane', minH: 8, maxH: 45 },
+  { kind: 'drone', minH: 4, maxH: 999 },
+  { kind: 'gulls', minH: 6, maxH: 999 },
+  { kind: 'hotair', minH: 14, maxH: 999 },
+  { kind: 'propplane', minH: 14, maxH: 999 },
+  { kind: 'raincloud', minH: 18, maxH: 999 },
+  { kind: 'blimp', minH: 24, maxH: 999 },
+];
 
-/** Compress long distances so the world stays a sensible size. */
+/** Compress very long distances so the world stays a sensible size. */
 export function worldLength(distanceMetres: number): number {
   const D = distanceMetres;
-  if (D <= 260) return D;
-  return 260 + 95 * Math.log(D / 260);
+  if (D <= 1400) return D;
+  return 1400 + 420 * Math.log(D / 1400);
 }
 
 export function buildFlightPlan(opts: {
@@ -59,10 +80,10 @@ export function buildFlightPlan(opts: {
 
   // Launch speed from the pull (visual flavour). Duration follows from it so
   // that a plain linear decay would stop exactly at L.
-  const vMax = 22;
+  const vMax = 75;
   let v0 = (0.45 + 0.55 * opts.power) * vMax;
   let T = (2 * L) / v0;
-  const tMin = 3.2, tMax = 42;
+  const tMin = 4, tMax = 58;
   if (T < tMin) { T = tMin; v0 = (2 * L) / T; }
   if (T > tMax) { T = tMax; v0 = (2 * L) / T; }
   // Nudge the launch speed so the plan is never the degenerate straight decay.
@@ -78,7 +99,7 @@ export function buildFlightPlan(opts: {
   for (let attempt = 0; attempt < 600 && !ok; attempt++) {
     // stratified placement inside the window so events are spread along the flight
     const times: number[] = [];
-    const w0 = 0.12 * T, w1 = 0.86 * T, slot = (w1 - w0) / n;
+    const w0 = 0.2 * T, w1 = 0.86 * T, slot = (w1 - w0) / n;
     for (let i = 0; i < n; i++) times.push(w0 + slot * (i + rng.range(0.1, 0.9)));
     let spaced = true;
     for (let i = 1; i < times.length; i++) if (times[i] - times[i - 1] < minGap) spaced = false;
@@ -118,9 +139,8 @@ export function buildFlightPlan(opts: {
     k = kk;
     events = times.map((t, i) => {
       const d = deltas[i];
-      const kind = d > 0 ? rng.pick(BOOSTS) : rng.pick(OBSTACLES);
-      const lift = d > 0 ? (kind === 'geyser' || kind === 'trampoline' ? 1.6 : kind === 'gust' ? 0.9 : 0.5) : (kind === 'bird' ? -0.2 : -0.5);
-      return { t, s: 0, delta: d, kind, lift, x: rng.range(-0.6, 0.6) };
+      const lift = d > 0 ? rng.range(2, 6) : rng.range(-3, -1);
+      return { t, s: 0, delta: d, kind: 'gulls' as EventKind, lift, x: rng.range(-0.6, 0.6) };
     });
     ok = true;
   }
@@ -153,10 +173,10 @@ export function buildFlightPlan(opts: {
   sArr[N - 1] = L; vArr[N - 1] = 0;
 
   // Height profile: a smooth arc plus bumps at events, touching down just before the end.
-  const h0 = 1.6;
-  const peak = 2.2 + 5.5 * opts.angle + Math.min(6, L / 60);
-  const landT = Math.max(T * 0.86, T - 1.6);
-  const styleLift = opts.style === 'swoop' ? 1.5 : opts.style === 'flutter' ? 0.6 : 1;
+  const h0 = 1.8;
+  const peak = 4 + (8 + 16 * opts.angle) * Math.min(1, L / 150) + Math.min(48, L / 28);
+  const landT = Math.max(T * 0.86, T - 1.8);
+  const styleLift = opts.style === 'swoop' ? 1.25 : opts.style === 'flutter' ? 0.8 : 1;
   for (let i = 0; i < N; i++) {
     const t = i * dt;
     const u = Math.min(1, t / T);
@@ -165,16 +185,16 @@ export function buildFlightPlan(opts: {
       const dtE = t - e.t;
       if (dtE > 0 && dtE < 3) {
         const w = Math.sin(Math.PI * dtE / 3);
-        h += e.lift * w * (e.delta > 0 ? 1 : 1);
+        h += e.lift * w;
       }
     }
     if (t > landT) {
       const q = Math.min(1, (t - landT) / Math.max(0.01, T - landT));
       const ease = 1 - Math.pow(1 - q, 2);
-      const groundH = 0.12;
+      const groundH = 0.3;
       h = h * (1 - ease) + groundH * ease;
     }
-    hArr[i] = Math.max(0.12, h);
+    hArr[i] = Math.max(0.3, h);
   }
   // make sure the glide into the landing is smooth: blend last airborne second downward
   for (let i = 0; i < N; i++) {
@@ -184,6 +204,18 @@ export function buildFlightPlan(opts: {
       const target = hArr[Math.min(N - 1, Math.round(landT / dt))];
       hArr[i] = hArr[i] * (1 - q * q * 0.5) + target * q * q * 0.5;
     }
+  }
+
+  // Now that the height profile exists, pick an object that makes sense at each event's altitude.
+  let lastKind: EventKind | null = null;
+  for (const e of events) {
+    const h = hArr[Math.min(N - 1, Math.round(e.t / dt))];
+    const table = e.delta > 0 ? BOOSTS : OBSTACLES;
+    let options = table.filter(o => h >= o.minH && h <= o.maxH && o.kind !== lastKind);
+    if (!options.length) options = table.filter(o => h >= o.minH && h <= o.maxH);
+    if (!options.length) options = table;
+    e.kind = rng.pick(options).kind;
+    lastKind = e.kind;
   }
 
   return { L, T, v0, events, dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre };

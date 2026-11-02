@@ -3,6 +3,7 @@ import { registerSW } from 'virtual:pwa-register';
 import { Engine } from './game/engine';
 import { UI } from './ui/ui';
 import { profile } from './core/store';
+import { server } from './core/server';
 import { audio } from './game/audio';
 
 audio.setEnabled(profile.sound);
@@ -22,4 +23,4 @@ ui.bind(engine);
 registerSW({ immediate: true });
 
 // Expose for debugging in the console.
-(window as unknown as { pp: unknown }).pp = { engine, ui, profile };
+(window as unknown as { pp: unknown }).pp = { engine, ui, profile, server };
