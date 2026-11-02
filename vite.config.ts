@@ -10,9 +10,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/*.png', 'icons/*.svg'],
       manifest: {
-        name: 'Paper Planes',
-        short_name: 'Paper Planes',
-        description: 'Pull back, let go, and watch your paper plane ride the wind.',
+        name: "Soarin' Steve",
+        short_name: "Soarin' Steve",
+        description: "Pack the powder, fire the cannon, and watch Soarin' Steve fly across the city.",
         theme_color: '#f6efe3',
         background_color: '#f6efe3',
         display: 'fullscreen',

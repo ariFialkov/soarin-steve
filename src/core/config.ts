@@ -21,7 +21,7 @@ export interface TierConfig {
 
 export const TIER_CONFIG: Record<Tier, TierConfig> = {
   easy: {
-    label: 'Easy',
+    label: 'Rookie',
     stake: 1,
     baseDistance: 420,
     maxMultiplier: 20,
@@ -35,7 +35,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
     ],
   },
   medium: {
-    label: 'Medium',
+    label: 'Pro',
     stake: 5,
     baseDistance: 620,
     maxMultiplier: 50,
@@ -50,7 +50,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
     ],
   },
   hard: {
-    label: 'Hard',
+    label: 'Daredevil',
     stake: 20,
     baseDistance: 880,
     maxMultiplier: 150,
@@ -65,7 +65,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
     ],
   },
   expert: {
-    label: 'Expert',
+    label: 'Legend',
     stake: 100,
     baseDistance: 1200,
     maxMultiplier: 500,
@@ -81,7 +81,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
   },
 };
 
-export type BoostKind = 'fan' | 'confetti' | 'sparkler';
+export type BoostKind = 'blower' | 'confetti' | 'rockets';
 
 export interface BoostConfig {
   label: string;
@@ -92,32 +92,32 @@ export interface BoostConfig {
 }
 
 export const BOOST_CONFIG: Record<BoostKind, BoostConfig> = {
-  fan: {
-    label: 'Handheld Fan',
+  blower: {
+    label: 'Leaf Blower',
     unit: 'second',
     price: 0.1,
     max: 10,
-    blurb: 'Hold it behind your plane to blow it along. Under the plane lifts it, off to one side nudges it over.',
+    blurb: 'Hold it behind Steve to blow him along. Under him lifts him, off to one side nudges him over.',
   },
   confetti: {
     label: 'Confetti Cannon',
     unit: 'shot',
     price: 0.25,
     max: 6,
-    blurb: 'One big pop. Fire it behind the plane for a shove; slightly underneath for a bit of lift too.',
+    blurb: 'One big circus pop. Fire it behind Steve for a shove; slightly underneath for a bit of lift too.',
   },
-  sparkler: {
-    label: 'Sparkler',
-    unit: 'sparkler',
+  rockets: {
+    label: 'Bottle Rockets',
+    unit: 'rocket',
     price: 0.2,
     max: 6,
-    blurb: 'Strapped to the tail like tiny rockets. Light them one at a time, or all at once if you dare.',
+    blurb: 'Strapped to his backpack before the show. Light them one at a time, or all at once if you dare.',
   },
 };
 
 export const WALLET_START = 1000;
 
-const RTP_KEY = 'paperplanes.rtp';
+const RTP_KEY = 'soarinsteve.rtp';
 const DEFAULT_RTP = 0.96;
 
 export function getRtp(): number {

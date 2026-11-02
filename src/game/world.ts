@@ -9,7 +9,7 @@ import type { FlightPlan } from './flightPlan';
 import type { ParticleSystem } from './particles';
 import { GeoBatch, PLANE, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture } from './geobatch';
 import { CityPlan, GRID, LAYER, buildChunk, districtGround, type AnimatedObject, type Batches, type District } from './city';
-import { DECOY_KINDS, balloonEnvelope, makeEventObject, type EventObject } from './events';
+import { DECOY_KINDS, STREET_DECOY_KINDS, balloonEnvelope, makeEventObject, type EventObject } from './events';
 
 export const CHUNK = GRID.CHUNK;
 const AHEAD = 7;
@@ -217,6 +217,17 @@ export class World {
         const ev = { t: Infinity, s: Math.max(i === 0 ? 46 : 0, -(z1 - rng.range(3, CHUNK - 3))), delta: -1, kind, lift: 0, x };
         const eo = makeEventObject(ev, h, this.particles, true);
         if (!grounded) eo.group.position.x = x; // the builders use e.x only as a small nudge; push fliers out to the side
+        decoys.push(eo);
+        group.add(eo.group);
+      }
+      // street-level filler on the cross streets (trampolines, bouncy castles, hot dog carts...)
+      if (district !== 'river' && rng.chance(0.7)) {
+        const kind = rng.pick(STREET_DECOY_KINDS);
+        const j = 2 * i + (rng.chance(0.5) ? 0 : 1);
+        const zs = -(16 + 32 * j);
+        const ev = { t: Infinity, s: -zs, delta: -1, kind, lift: 0, x: 0 };
+        const eo = makeEventObject(ev, 1, this.particles, true);
+        eo.group.position.x = rng.sign() * rng.range(14, 60);
         decoys.push(eo);
         group.add(eo.group);
       }

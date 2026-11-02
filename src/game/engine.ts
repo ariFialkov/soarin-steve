@@ -1,31 +1,34 @@
 /**
- * The 3D engine: scene, launcher, flight playback, camera and the mid-flight
- * boosts. It never decides money. It receives a finished RoundResult from the
- * server module and animates a flight that lands exactly on it.
+ * The 3D engine: scene, cannon, Steve's flight and landing performance,
+ * camera and the mid-flight boosts. It never decides money. It receives a
+ * finished RoundResult from the server module and performs a flight that
+ * lands exactly on it.
  */
 import * as THREE from 'three';
 import { BOOST_CONFIG, TIER_CONFIG, type BoostKind } from '../core/config';
 import { server, type RoundResult } from '../core/server';
 import { profile, saveProfile } from '../core/store';
-import { planeById, type PlaneDef } from '../data/planes';
+import { suitById, type SuitDef } from '../data/suits';
 import { audio } from './audio';
 import { buildFlightPlan, sampleAt, type FlightPlan, type FumbleKind } from './flightPlan';
 import { ParticleSystem } from './particles';
-import { buildPlaneModel, type PlaneModel } from './planeModel';
+import { buildSteve, type SteveRig } from './steve';
+import { buildCannon, type Cannon } from './cannon';
 import { World } from './world';
 import { LAUNCH_H } from './constants';
+import { isGroundKind } from './flightPlan';
 
 export type GameState = 'menu' | 'aiming' | 'betting' | 'flying' | 'landed';
 
 export interface HudInfo {
   distance: number;    // metres
   cash: number;
-  speed: number;       // world units / s (display only)
-  progress: number;    // 0..1
-  fanSeconds: number;
+  speed: number;
+  progress: number;
+  blowerSeconds: number;
   confetti: number;
-  sparklers: number;
-  litSparklers: number;
+  rockets: number;
+  litRockets: number;
 }
 
 export interface EngineEvents {
@@ -39,7 +42,7 @@ export interface EngineEvents {
 
 interface Impulse { strength: number; remaining: number; duration: number }
 
-const UP = new THREE.Vector3(0, 1, 0);
+const PRONE = -Math.PI / 2;
 
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
@@ -51,17 +54,15 @@ export class Engine {
 
   private clock = new THREE.Clock();
   private world: World | null = null;
-  private plane: PlaneModel | null = null;
-  private planeDef: PlaneDef;
-  private launcher = new THREE.Group();
-  private bandL!: THREE.Line;
-  private bandR!: THREE.Line;
+  private steve: SteveRig | null = null;
+  private suit: SuitDef;
+  private cannon: Cannon;
   private blob: THREE.Mesh;
-  private fanModel: THREE.Group;
-  private fanBlades!: THREE.Group;
-  private fanHum: { stop(): void } | null = null;
+  private blower: THREE.Group;
+  private blowerFan!: THREE.Group;
+  private blowerHum: { stop(): void } | null = null;
 
-  // launcher / aiming
+  // aiming
   private pointerDown = false;
   private pointerStart = new THREE.Vector2();
   private pull = 0;
@@ -78,27 +79,32 @@ export class Engine {
   private lateral = 0; private lateralVel = 0;
   private bonk = 0;
   private cashPerUnit = 0;
-  private camY = 3;
+  private camY = LAUNCH_H + 3;
   private landedAt = -1;
   private resultSent = false;
   private menuTime = 0;
+  private preroll: { t: number; v0: number; z0: number; dir: THREE.Vector3; from: THREE.Vector3 } | null = null;
+  private fumbleShown = false;
+  private spin = 0;            // tumbling rotation (rad) about the body's x axis
+  private spinRate = 0;
+  private bounceSpinUntil = -1;
+  private landOrbit = 0;
 
   // boosts inventory for the current round
-  private fanSeconds = 0;
-  private fanActive = false;
-  private fanPos = new THREE.Vector3();
+  private blowerSeconds = 0;
+  private blowerActive = false;
+  private blowerPos = new THREE.Vector3();
   private confetti = 0;
-  private sparklers = 0;
-  private sparklerLit: { idx: number; age: number; stop: () => void }[] = [];
-  private sparklerNext = 0;
+  private rockets = 0;
+  private rocketsLit: { idx: number; age: number; stop: () => void }[] = [];
+  private rocketNext = 0;
+  private rocketTotal = 0;
 
-  // launch pre-roll: the plane leaves the band immediately while the bet resolves
-  private preroll: { t: number; v0: number; z0: number } | null = null;
-  private fumbleShown = false;
-  private hud: HudInfo = { distance: 0, cash: 0, speed: 0, progress: 0, fanSeconds: 0, confetti: 0, sparklers: 0, litSparklers: 0 };
+  private hud: HudInfo = { distance: 0, cash: 0, speed: 0, progress: 0, blowerSeconds: 0, confetti: 0, rockets: 0, litRockets: 0 };
   private events: EngineEvents;
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
+  private tmpV3 = new THREE.Vector3();
 
   constructor(canvas: HTMLCanvasElement, events: EngineEvents) {
     this.events = events;
@@ -116,27 +122,26 @@ export class Engine {
     const hemi = new THREE.HemisphereLight('#e8f6ff', '#9a9a8a', 1.05);
     const sun = new THREE.DirectionalLight('#fff4d6', 1.7);
     sun.position.set(-30, 50, -25);
-    // soft fill from below so the paper's underside never goes muddy when the plane climbs
     const fill = new THREE.DirectionalLight('#e8f0ff', 0.55);
     fill.position.set(10, -30, 20);
     this.scene.add(hemi, sun, fill);
 
-    this.particles = new ParticleSystem(high ? 1200 : 600);
+    this.particles = new ParticleSystem(high ? 1400 : 700);
     this.scene.add(this.particles.mesh);
 
     this.blob = new THREE.Mesh(new THREE.CircleGeometry(0.6, 20), new THREE.MeshBasicMaterial({ color: 0x1b2a10, transparent: true, opacity: 0.14, depthWrite: false }));
     this.blob.rotation.x = -Math.PI / 2;
     this.scene.add(this.blob);
 
-    this.buildLauncher();
-    this.launcher.position.y = LAUNCH_H;
-    this.scene.add(this.launcher);
-    this.fanModel = this.buildFan();
-    this.fanModel.visible = false;
-    this.scene.add(this.fanModel);
+    this.cannon = buildCannon();
+    this.cannon.group.position.y = LAUNCH_H;
+    this.scene.add(this.cannon.group);
+    this.blower = this.buildBlower();
+    this.blower.visible = false;
+    this.scene.add(this.blower);
 
-    this.planeDef = planeById(profile.selected[profile.tier]);
-    this.setPlane(this.planeDef);
+    this.suit = suitById(profile.selected[profile.tier]);
+    this.setSuit(this.suit);
     this.newWorld();
 
     this.resize();
@@ -159,63 +164,43 @@ export class Engine {
     this.camera.updateProjectionMatrix();
   }
 
-  private buildLauncher(): void {
-    const wood = new THREE.MeshLambertMaterial({ color: '#b07a4a' });
-    const postGeo = new THREE.CylinderGeometry(0.09, 0.12, 1.5, 8);
-    for (const x of [-1.4, 1.4]) {
-      const p = new THREE.Mesh(postGeo, wood);
-      p.position.set(x, 0.75, 0.6);
-      p.rotation.z = x > 0 ? -0.12 : 0.12;
-      this.launcher.add(p);
-    }
-    const base = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.18, 0.8), wood);
-    base.position.set(0, 0.09, 0.6);
-    this.launcher.add(base);
-    const bandMat = new THREE.LineBasicMaterial({ color: '#d94f4f' });
-    const mk = () => {
-      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-      return new THREE.Line(g, bandMat);
-    };
-    this.bandL = mk(); this.bandR = mk();
-    this.launcher.add(this.bandL, this.bandR);
-    // a little stand for the plane to rest on
-    const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 1.3, 6), wood);
-    stand.position.set(0, 0.8, 0.1);
-    this.launcher.add(stand);
-  }
-
-  private buildFan(): THREE.Group {
+  private buildBlower(): THREE.Group {
     const g = new THREE.Group();
-    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.7, 8), new THREE.MeshLambertMaterial({ color: '#f26b6b' }));
-    handle.position.y = -0.6;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.05, 6, 18), new THREE.MeshLambertMaterial({ color: '#ffffff' }));
-    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), new THREE.MeshLambertMaterial({ color: '#333' }));
-    this.fanBlades = new THREE.Group();
-    const bladeMat = new THREE.MeshLambertMaterial({ color: '#9fd8ff', transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 0.5, 10), new THREE.MeshLambertMaterial({ color: '#ff7a1a' }));
+    body.rotation.x = Math.PI / 2; body.position.z = 0.1;
+    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 1.0, 10), new THREE.MeshLambertMaterial({ color: '#2b2b2b' }));
+    tube.rotation.x = Math.PI / 2; tube.position.z = -0.6;
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.4, 0.14), new THREE.MeshLambertMaterial({ color: '#2b2b2b' }));
+    handle.position.set(0, 0.42, 0.15);
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.5), new THREE.MeshLambertMaterial({ color: '#2b2b2b' }));
+    grip.position.set(0, 0.6, 0.05);
+    this.blowerFan = new THREE.Group();
+    const bladeMat = new THREE.MeshLambertMaterial({ color: '#9fd8ff', transparent: true, opacity: 0.8, side: THREE.DoubleSide });
     for (let i = 0; i < 4; i++) {
-      const b = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.34), bladeMat);
-      b.position.y = 0.2;
+      const b = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.26), bladeMat);
+      b.position.y = 0.14;
       const p = new THREE.Group(); p.rotation.z = (i / 4) * Math.PI * 2; p.add(b);
-      this.fanBlades.add(p);
+      this.blowerFan.add(p);
     }
-    g.add(handle, ring, hub, this.fanBlades);
+    this.blowerFan.position.z = 0.4;
+    g.add(body, tube, handle, grip, this.blowerFan);
     return g;
   }
 
-  setPlane(def: PlaneDef): void {
-    if (this.plane) { this.scene.remove(this.plane.group); this.plane.dispose(); }
-    this.planeDef = def;
-    this.plane = buildPlaneModel(def);
-    this.plane.group.scale.setScalar(2.4);
-    this.scene.add(this.plane.group);
-    this.placePlaneOnLauncher();
+  setSuit(def: SuitDef): void {
+    if (this.steve) { this.scene.remove(this.steve.group); this.steve.dispose(); }
+    this.suit = def;
+    this.steve = buildSteve(def);
+    this.steve.group.scale.setScalar(1.25);
+    this.scene.add(this.steve.group);
+    this.placeOnRoof();
   }
 
-  /** Called by the UI when the tier/plane selection changes. */
+  /** Called by the UI when the tier/suit selection changes. */
   refreshSelection(): void {
-    const def = planeById(profile.selected[profile.tier]);
-    if (def.id !== this.planeDef.id) this.setPlane(def);
-    this.updateSparklerVisibility();
+    const def = suitById(profile.selected[profile.tier]);
+    if (def.id !== this.suit.id) this.setSuit(def);
+    this.updateRocketVisibility();
     if (this.world) this.world.setCashPerUnit(this.menuCashPerUnit());
   }
 
@@ -226,39 +211,46 @@ export class Engine {
 
   private async newWorld(): Promise<void> {
     if (this.world) { this.scene.remove(this.world.group); this.world.dispose(); }
-    // The world seed is the public commitment for the next round: cosmetic, but
-    // it lets us build the scenery before the bet without it changing after.
     const seed = await server.nextSeedHash();
     this.world = new World({ seed, cashPerUnit: this.menuCashPerUnit(), quality: profile.quality }, this.particles);
     this.scene.add(this.world.group);
   }
 
-  private placePlaneOnLauncher(): void {
-    if (!this.plane) return;
-    this.plane.group.position.set(0, LAUNCH_H + 1.6, 0);
-    this.plane.group.rotation.set(0, 0, 0);
-    this.plane.body.position.set(0, 0, 0);
-    this.plane.body.rotation.set(0, 0, 0);
-    this.updateBands(0);
+  /** Steve standing proudly beside the cannon (menu) */
+  private placeOnRoof(): void {
+    if (!this.steve) return;
+    const s = this.steve;
+    s.group.position.set(2.6, LAUNCH_H, -0.6);
+    s.group.rotation.set(0, 0.5, 0);
+    s.body.position.set(0, 0, 0);
+    s.body.rotation.set(0, 0, 0);
+    s.root.rotation.set(0, 0, 0);
+    s.root.position.set(0, 0.95, 0);
+    s.snapPose('hero');
+    this.spin = 0; this.spinRate = 0;
   }
 
-  private updateBands(pull: number): void {
-    const tail = new THREE.Vector3(0, 1.55, 0.5 + pull * 2.2);
-    for (const [band, x] of [[this.bandL, -1.4], [this.bandR, 1.4]] as const) {
-      const pos = band.geometry.attributes.position as THREE.BufferAttribute;
-      pos.setXYZ(0, x, 1.5, 0.6);
-      pos.setXYZ(1, tail.x, tail.y, tail.z);
-      pos.needsUpdate = true;
-    }
+  /** Steve tucked in the cannon, ready to fire (aiming) */
+  private placeInCannon(): void {
+    if (!this.steve) return;
+    const s = this.steve;
+    this.cannon.muzzle(this.tmpV, this.tmpV2);
+    s.group.position.copy(this.tmpV).addScaledVector(this.tmpV2, -0.9);
+    s.group.rotation.set(0, 0, 0);
+    s.body.position.set(0, 0, 0);
+    s.body.rotation.set(0, 0, 0);
+    s.root.position.set(0, 0, 0);
+    s.root.rotation.set(Math.atan2(this.tmpV2.y, -this.tmpV2.z) + 0.3, 0, 0);
+    s.snapPose('tuck');
   }
 
-  private updateSparklerVisibility(): void {
-    if (!this.plane) return;
-    const n = this.state === 'flying' || this.state === 'landed' || this.state === 'betting' ? this.sparklers + this.sparklerLit.length : Math.min(BOOST_CONFIG.sparkler.max, profile.boosts.sparkler);
-    const total = this.state === 'flying' || this.state === 'landed' ? this.sparklerNextTotal : n;
-    this.plane.sparklers.forEach((s, i) => { s.visible = i < total; });
+  private updateRocketVisibility(): void {
+    if (!this.steve) return;
+    const inRound = this.state === 'flying' || this.state === 'landed' || this.state === 'betting';
+    const total = inRound ? this.rocketTotal : Math.min(BOOST_CONFIG.rockets.max, profile.boosts.rockets);
+    this.steve.rockets.forEach((r, i) => { r.visible = i < total; });
+    this.steve.pack.visible = total > 0;
   }
-  private sparklerNextTotal = 0;
 
   // ---------------------------------------------------------------- state
   private setState(s: GameState): void {
@@ -267,29 +259,26 @@ export class Engine {
     this.events.onState(s);
   }
 
-  /** Leave the menu and get ready to aim. */
   startPlaying(): void {
     if (this.state !== 'menu') return;
     audio.unlock();
     this.refreshSelection();
-    this.placePlaneOnLauncher();
+    this.placeInCannon();
     this.setState('aiming');
   }
 
-  /** Back to the menu (from aiming or after a round). */
   async toMenu(): Promise<void> {
     this.resetRound();
     await this.newWorld();
-    this.placePlaneOnLauncher();
+    this.placeOnRoof();
     this.setState('menu');
   }
 
-  /** After a round: reset and aim again straight away. */
   async playAgain(): Promise<void> {
     this.resetRound();
     await this.newWorld();
     this.refreshSelection();
-    this.placePlaneOnLauncher();
+    this.placeInCannon();
     this.setState('aiming');
   }
 
@@ -297,60 +286,71 @@ export class Engine {
     this.plan = null; this.result = null; this.tau = 0; this.flightClock = 0;
     this.impulses = []; this.lift = 0; this.liftVel = 0; this.lateral = 0; this.lateralVel = 0;
     this.bonk = 0; this.landedAt = -1; this.resultSent = false; this.preroll = null; this.fumbleShown = false;
-    this.fanActive = false; this.fanModel.visible = false; this.fanHum?.stop(); this.fanHum = null;
-    for (const s of this.sparklerLit) s.stop();
-    this.sparklerLit = []; this.sparklerNext = 0; this.sparklerNextTotal = 0;
+    this.spin = 0; this.spinRate = 0; this.bounceSpinUntil = -1; this.landOrbit = 0;
+    this.blowerActive = false; this.blower.visible = false; this.blowerHum?.stop(); this.blowerHum = null;
+    for (const r of this.rocketsLit) r.stop();
+    this.rocketsLit = []; this.rocketNext = 0; this.rocketTotal = 0;
     this.boostMode = null;
     this.particles.clear();
-    this.launcher.visible = true;
+    this.cannon.group.visible = true;
+    this.cannon.setCharge(0);
     this.pull = 0;
     this.camY = LAUNCH_H + 3;
-    // snap the camera back to the launcher instead of lerping across the whole map
     this.camera.position.set(0, LAUNCH_H + 2.9, 6);
     this.camera.lookAt(0, LAUNCH_H + 1.7, -7);
   }
 
   // ---------------------------------------------------------------- launch
   private async launch(power: number): Promise<void> {
-    if (!this.plane || !this.world) return;
+    if (!this.steve || !this.world) return;
     this.setState('betting');
-    this.preroll = { t: 0, v0: (0.45 + 0.55 * power) * 75, z0: this.plane.group.position.z };
-    this.updateBands(0);
-    audio.whoosh(0.7, 0.8, 1.1);
-    this.particles.emit({ pos: new THREE.Vector3(0, LAUNCH_H + 1.6, 0.5), vel: new THREE.Vector3(0, 0.5, 2), spread: 2, count: 14, life: 0.5, size: 0.14, endSize: 0, colors: ['#ffffff', '#fff3c4'], drag: 2 });
+    this.cannon.muzzle(this.tmpV, this.tmpV2);
+    this.preroll = { t: 0, v0: (0.45 + 0.55 * power) * 75, z0: this.tmpV.z, dir: this.tmpV2.clone(), from: this.tmpV.clone() };
+    this.cannon.setCharge(0);
+    this.cannon.fire();
+    audio.boom();
+    this.particles.emit({ pos: this.tmpV.clone(), vel: this.tmpV2.clone().multiplyScalar(9), spread: 3, count: 50, life: 1.4, size: 1.0, endSize: 2.6, colors: ['#ffffff', '#e9e4da', '#cfc9bf'], drag: 1.6 });
+    this.particles.emit({ pos: this.tmpV.clone(), vel: this.tmpV2.clone().multiplyScalar(14), spread: 4, count: 24, life: 0.5, size: 0.35, endSize: 0.05, colors: ['#ffd27f', '#fff1a8', '#ff9a3c'], drag: 2 });
+    this.spin = 0; this.spinRate = 11 + power * 5;
+    this.steve.setPose('tuck', 12);
+    this.steve.root.rotation.set(0, 0, 0);
+    this.steve.root.position.set(0, 0, 0);
+
     const boosts = { ...profile.boosts };
     let result: RoundResult;
     try {
       // THE bet. Everything that follows is decided by this one call.
-      result = await server.placeBet({ tier: profile.tier, planeId: this.planeDef.id, boosts, clientSeed: profile.clientSeed });
+      result = await server.placeBet({ tier: profile.tier, suitId: this.suit.id, boosts, clientSeed: profile.clientSeed });
     } catch (e) {
       this.events.onError((e as Error).message);
       this.preroll = null;
-      this.placePlaneOnLauncher();
+      this.placeInCannon();
       this.setState('aiming');
       return;
     }
-    // Boosts are consumed by the round whether or not the player uses them.
-    this.fanSeconds = boosts.fan;
+    this.blowerSeconds = boosts.blower;
     this.confetti = boosts.confetti;
-    this.sparklers = boosts.sparkler;
-    this.sparklerNextTotal = boosts.sparkler;
-    profile.boosts = { fan: 0, confetti: 0, sparkler: 0 };
+    this.rockets = boosts.rockets;
+    this.rocketTotal = boosts.rockets;
+    profile.boosts = { blower: 0, confetti: 0, rockets: 0 };
     profile.rounds++;
     saveProfile();
 
     this.result = result;
-    const plan = buildFlightPlan({ seed: result.worldSeed, distanceMetres: result.distance, power, angle: 0.3 + 0.7 * power, style: this.planeDef.flight });
+    const plan = buildFlightPlan({ seed: result.worldSeed, distanceMetres: result.distance, power, angle: 0.3 + 0.7 * power, style: this.suit.flight });
     this.plan = plan;
     this.cashPerUnit = result.payout / plan.L;
     this.world.setPlan(plan, this.cashPerUnit);
-    this.updateSparklerVisibility();
+    this.updateRocketVisibility();
     // pick up the plan at the distance the pre-roll has already covered, so there is no jump
-    const covered = this.preroll ? Math.max(0, this.preroll.z0 - this.plane.group.position.z) : 0;
+    const g = this.steve.group;
+    const covered = this.preroll ? Math.max(0, this.preroll.z0 - g.position.z) : 0;
     this.preroll = null;
     let tau = 0;
     while (tau < plan.T && sampleAt(plan.s, plan.dt, tau) < covered) tau += plan.dt;
     this.tau = Math.min(tau, plan.T);
+    // absorb any height difference between the pre-roll and the plan with the lift spring
+    this.lift = (g.position.y - sampleAt(plan.h, plan.dt, this.tau)) / 0.8;
     this.flightClock = 0;
     this.fumbleShown = false;
     this.setState('flying');
@@ -362,15 +362,13 @@ export class Engine {
     this.pointerNdc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
   }
 
-  /** Project the pointer onto a vertical plane just behind the paper plane. */
   private pointerToWorld(e: PointerEvent, out: THREE.Vector3): boolean {
-    if (!this.plane) return false;
+    if (!this.steve) return false;
     this.ndcFromEvent(e);
     this.raycaster.setFromCamera(this.pointerNdc, this.camera);
-    const pz = this.plane.group.position.z + 1.6;
+    const pz = this.steve.group.position.z + 1.6;
     const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -pz);
-    const hit = this.raycaster.ray.intersectPlane(plane, out);
-    return !!hit;
+    return !!this.raycaster.ray.intersectPlane(plane, out);
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -383,12 +381,12 @@ export class Engine {
       return;
     }
     if (this.state === 'flying') {
-      if (this.boostMode === 'fan' && this.fanSeconds > 0) {
-        if (this.pointerToWorld(e, this.fanPos)) { this.fanActive = true; this.pointerDown = true; this.fanModel.visible = true; if (!this.fanHum) this.fanHum = audio.hum(); }
+      if (this.boostMode === 'blower' && this.blowerSeconds > 0) {
+        if (this.pointerToWorld(e, this.blowerPos)) { this.blowerActive = true; this.pointerDown = true; this.blower.visible = true; if (!this.blowerHum) this.blowerHum = audio.hum(); }
       } else if (this.boostMode === 'confetti' && this.confetti > 0) {
         if (this.pointerToWorld(e, this.tmpV)) this.fireConfetti(this.tmpV.clone());
-      } else if (this.boostMode === 'sparkler' && this.sparklers > 0) {
-        this.lightSparkler();
+      } else if (this.boostMode === 'rockets' && this.rockets > 0) {
+        this.lightRocket();
       }
     }
   }
@@ -399,9 +397,10 @@ export class Engine {
       const dx = e.clientX - this.pointerStart.x;
       const along = Math.max(0, dy) + Math.abs(dx) * 0.15;
       this.pull = Math.min(1, along / (window.innerHeight * 0.3));
+      this.cannon.setCharge(this.pull);
       this.events.onPull(this.pull);
-    } else if (this.state === 'flying' && this.fanActive) {
-      this.pointerToWorld(e, this.fanPos);
+    } else if (this.state === 'flying' && this.blowerActive) {
+      this.pointerToWorld(e, this.blowerPos);
     }
   }
 
@@ -410,22 +409,21 @@ export class Engine {
       this.pointerDown = false;
       const p = this.pull;
       this.events.onPull(0);
-      if (p < 0.08) { this.pull = 0; return; }
+      if (p < 0.08) { this.pull = 0; this.cannon.setCharge(0); return; }
       this.pull = 0;
       void this.launch(p);
       return;
     }
-    if (this.fanActive) {
-      this.fanActive = false; this.pointerDown = false;
-      this.fanModel.visible = false;
-      this.fanHum?.stop(); this.fanHum = null;
+    if (this.blowerActive) {
+      this.blowerActive = false; this.pointerDown = false;
+      this.blower.visible = false;
+      this.blowerHum?.stop(); this.blowerHum = null;
     }
   }
 
   // ---------------------------------------------------------------- boosts
-  /** How much a push from `from` towards the plane counts, split into forward / lift / lateral. */
   private pushComponents(from: THREE.Vector3): { forward: number; lift: number; lateral: number; falloff: number } {
-    const P = this.plane!.group.position;
+    const P = this.steve!.group.position;
     const d = this.tmpV2.copy(P).sub(from);
     const dist = d.length();
     if (dist < 1e-3) return { forward: 0, lift: 0, lateral: 0, falloff: 0 };
@@ -435,10 +433,10 @@ export class Engine {
   }
 
   private fireConfetti(at: THREE.Vector3): void {
-    if (this.confetti <= 0 || !this.plane) return;
+    if (this.confetti <= 0 || !this.steve) return;
     this.confetti--;
     audio.pop();
-    const P = this.plane.group.position;
+    const P = this.steve.group.position;
     const dir = P.clone().sub(at).normalize();
     this.particles.emit({ pos: at, vel: dir.clone().multiplyScalar(9), spread: 4, count: 70, life: 1.6, size: 0.16, endSize: 0.12, colors: ['#f26b6b', '#f2c14e', '#5fb8e6', '#7bc96f', '#e5679a', '#ffffff'], drag: 1.6, gravity: 4, spin: 14 });
     const c = this.pushComponents(at);
@@ -448,18 +446,18 @@ export class Engine {
     this.lateralVel += 4 * c.lateral * k;
   }
 
-  private lightSparkler(): void {
-    if (this.sparklers <= 0 || !this.plane) return;
-    this.sparklers--;
-    const idx = this.sparklerNext++;
+  private lightRocket(): void {
+    if (this.rockets <= 0 || !this.steve) return;
+    this.rockets--;
+    const idx = this.rocketNext++;
     const stop = audio.fizz(1.4);
-    this.sparklerLit.push({ idx, age: 0, stop });
+    this.rocketsLit.push({ idx, age: 0, stop });
     const k = this.speedFactor();
     this.impulses.push({ strength: 1.0 * k, remaining: 1.4, duration: 1.4 });
     this.liftVel += 0.8 * k;
   }
 
-  /** Boosts only work in proportion to how fast the plane is already going. */
+  /** Boosts only work in proportion to how fast Steve is already going. */
   private speedFactor(): number {
     if (!this.plan) return 0;
     const v = sampleAt(this.plan.v, this.plan.dt, this.tau);
@@ -467,7 +465,7 @@ export class Engine {
   }
 
   setBoostMode(mode: BoostKind | null): void {
-    if (this.boostMode === 'fan' && mode !== 'fan' && this.fanActive) this.onPointerUp(new PointerEvent('pointerup'));
+    if (this.boostMode === 'blower' && mode !== 'blower' && this.blowerActive) this.onPointerUp(new PointerEvent('pointerup'));
     this.boostMode = mode;
   }
 
@@ -475,95 +473,91 @@ export class Engine {
   private frame(): void {
     const dt = Math.min(0.05, this.clock.getDelta());
     this.menuTime += dt;
+    this.cannon.update(dt, this.menuTime);
     if (this.state === 'menu') this.updateMenu(dt);
     else if (this.state === 'aiming') this.updateAiming(dt);
     else if (this.state === 'betting') this.updatePreroll(dt);
-    else this.updateFlight(dt);
+    else if (this.state === 'flying') this.updateFlight(dt);
+    else this.updateLanded(dt);
 
-    const pz = this.plane ? this.plane.group.position.z : 0;
+    const pz = this.steve ? this.steve.group.position.z : 0;
     this.world?.update(dt, pz, this.camera.position.z, this.camera.position.y, this.tau);
     this.particles.update(dt, this.camera);
-    if (this.plane) {
-      const p = this.plane.group.position;
+    this.steve?.update(dt, this.menuTime);
+    if (this.steve) {
+      const p = this.steve.group.position;
       const onRoof = p.z > -6;
-      this.blob.position.set(p.x + this.plane.body.position.x * 1.6, onRoof ? LAUNCH_H + 0.08 : 0.3, p.z);
-      const s = Math.max(0.5, 1.6 - (p.y - (onRoof ? LAUNCH_H : 0)) * 0.02);
-      this.blob.scale.set(s * 1.3, s, 1);
-      (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.16 * Math.max(0, 1 - (p.y - (onRoof ? LAUNCH_H : 0)) / 40);
+      this.blob.position.set(p.x + this.steve.body.position.x * 1.25, onRoof ? LAUNCH_H + 0.08 : 0.3, p.z);
+      const rel = p.y - (onRoof ? LAUNCH_H : 0);
+      const s = Math.max(0.5, 1.4 - rel * 0.02);
+      this.blob.scale.set(s * 1.1, s, 1);
+      (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.16 * Math.max(0, 1 - rel / 40);
     }
     this.renderer.render(this.scene, this.camera);
   }
 
   private updateMenu(dt: number): void {
-    if (!this.plane) return;
+    if (!this.steve) return;
     const t = this.menuTime;
-    // plane rests on the launcher, bobbing a little in the breeze
-    this.plane.body.position.set(0, Math.sin(t * 1.2) * 0.04, 0);
-    this.plane.body.rotation.set(Math.sin(t * 0.9) * 0.03, 0, Math.sin(t * 1.1) * 0.05);
-    this.updateBands(0);
-    // slow orbiting camera
+    // a little idle sway and a wave now and then
+    this.steve.body.rotation.set(0, Math.sin(t * 0.7) * 0.06, Math.sin(t * 1.1) * 0.02);
     const a = Math.sin(t * 0.18) * 0.9;
-    const target = new THREE.Vector3(Math.sin(a) * 5.5, LAUNCH_H + 2.3 + Math.sin(t * 0.3) * 0.3, Math.cos(a) * 5.5 + 0.8);
+    const target = new THREE.Vector3(Math.sin(a) * 6.5, LAUNCH_H + 2.6 + Math.sin(t * 0.3) * 0.3, Math.cos(a) * 6.5 + 1.5);
     this.camera.position.lerp(target, Math.min(1, dt * 1.5));
-    this.camera.lookAt(0, LAUNCH_H + 1.5, -4);
-    void dt;
+    this.camera.lookAt(0.8, LAUNCH_H + 1.6, -1.5);
   }
 
   private updateAiming(dt: number): void {
-    if (!this.plane) return;
+    if (!this.steve) return;
     const p = this.pull;
-    const t = this.menuTime;
-    this.plane.group.position.set(0, LAUNCH_H + 1.6, p * 2.2);
-    this.plane.group.rotation.set(0.1 + p * 0.45, 0, 0);
-    this.plane.body.position.set(0, Math.sin(t * 1.2) * 0.02, 0);
-    this.plane.body.rotation.set(0, 0, Math.sin(t * 1.1) * 0.03 + p * Math.sin(t * 25) * 0.015);
-    this.updateBands(p);
-    const target = new THREE.Vector3(0, LAUNCH_H + 2.9, 5.4 + p * 1.4);
+    this.placeInCannon();
+    const target = new THREE.Vector3(0.8, LAUNCH_H + 3.2, 6.2 + p * 1.2);
     this.camera.position.lerp(target, Math.min(1, dt * 4));
-    this.camera.lookAt(0, LAUNCH_H + 1.7, -7);
+    this.camera.lookAt(0, LAUNCH_H + 2.2, -8);
   }
 
-  /** While the bet resolves the plane is already off the band and climbing; the plan takes over seamlessly. */
+  /** While the bet resolves Steve is already out of the barrel and climbing. */
   private updatePreroll(dt: number): void {
-    if (!this.plane || !this.preroll) return;
+    if (!this.steve || !this.preroll) return;
     const p = this.preroll;
     p.t += dt;
-    const g = this.plane.group;
-    g.position.z = p.z0 - p.v0 * p.t;
-    g.position.y = LAUNCH_H + 1.8 + p.t * p.v0 * 0.12;
-    g.rotation.set(0.1 + 0.12 * Math.min(1, p.t * 4), 0, 0);
-    this.plane.body.position.set(0, 0, 0);
-    this.plane.body.rotation.set(0, 0, 0);
+    const g = this.steve.group;
+    g.position.copy(p.from).addScaledVector(p.dir, p.v0 * p.t);
+    g.rotation.set(0, 0, 0);
+    this.spin += this.spinRate * dt;
+    this.steve.root.rotation.set(-this.spin, 0, 0);
+    this.steve.body.position.set(0, 0, 0);
+    this.steve.body.rotation.set(0, 0, 0);
     const vNorm = Math.min(1, p.v0 / 60);
-    const targetY = g.position.y + 2.4 + vNorm * 2.2;
+    const targetY = g.position.y + 2.0 + vNorm * 1.6;
     this.camY += (targetY - this.camY) * Math.min(1, dt * 3);
     this.camera.position.set(0, this.camY, g.position.z + 7 + vNorm * 5);
-    const lookY = (this.camY - 1.6 - vNorm * 1.2) * 0.45 + g.position.y * 0.55;
-    this.camera.lookAt(0, lookY, g.position.z - 14);
+    this.camera.lookAt(0, g.position.y - 0.9, g.position.z - 16);
   }
 
   private updateFlight(dt: number): void {
-    if (!this.plan || !this.plane || !this.result) return;
+    if (!this.plan || !this.steve || !this.result) return;
     const plan = this.plan;
+    const steve = this.steve;
     this.flightClock += dt;
 
-    // ---- boosts: fan (continuous), impulses (confetti / sparklers)
+    // ---- boosts: blower (continuous), impulses (confetti / rockets)
     let rate = 1;
-    if (this.fanActive && this.fanSeconds > 0) {
-      this.fanSeconds = Math.max(0, this.fanSeconds - dt);
-      const c = this.pushComponents(this.fanPos);
+    if (this.blowerActive && this.blowerSeconds > 0) {
+      this.blowerSeconds = Math.max(0, this.blowerSeconds - dt);
+      const c = this.pushComponents(this.blowerPos);
       const k = c.falloff * this.speedFactor();
       rate += 0.85 * c.forward * k;
       this.liftVel += 9 * c.lift * k * dt;
       this.lateralVel += 7 * c.lateral * k * dt;
-      this.fanModel.position.copy(this.fanPos);
-      this.fanModel.lookAt(this.plane.group.position);
-      this.fanBlades.rotation.z += dt * 40;
+      this.blower.position.copy(this.blowerPos);
+      this.blower.lookAt(steve.group.position);
+      this.blowerFan.rotation.z += dt * 45;
       if (Math.random() < 0.9) {
-        const dir = this.tmpV.copy(this.plane.group.position).sub(this.fanPos).normalize();
-        this.particles.emit({ pos: this.fanPos.clone().addScaledVector(dir, 0.5), vel: dir.multiplyScalar(10), spread: 1.2, count: 2, life: 0.45, size: 0.12, endSize: 0.02, colors: ['#ffffff', '#e6f3ff'], drag: 1 });
+        const dir = this.tmpV.copy(steve.group.position).sub(this.blowerPos).normalize();
+        this.particles.emit({ pos: this.blowerPos.clone().addScaledVector(dir, 1.1), vel: dir.multiplyScalar(11), spread: 1.2, count: 2, life: 0.45, size: 0.12, endSize: 0.02, colors: ['#ffffff', '#e6f3ff', '#c9d86a'], drag: 1 });
       }
-      if (this.fanSeconds <= 0) { this.onPointerUp(new PointerEvent('pointerup')); }
+      if (this.blowerSeconds <= 0) { this.onPointerUp(new PointerEvent('pointerup')); }
     }
     for (const im of this.impulses) {
       const env = Math.sin(Math.PI * Math.min(1, 1 - im.remaining / im.duration)) ** 0.5;
@@ -571,7 +565,6 @@ export class Engine {
       im.remaining -= dt;
     }
     this.impulses = this.impulses.filter(i => i.remaining > 0);
-    // after landing nothing can push the plane
     if (this.tau >= plan.T) rate = 1;
 
     // ---- advance plan time (only the rate is affected by boosts; the end point is fixed)
@@ -585,8 +578,10 @@ export class Engine {
     for (const eo of this.world!.events) {
       if (!eo.triggered && this.tau >= eo.event.t) {
         eo.trigger();
-        if (eo.event.delta > 0) { audio.boing(); }
-        else { audio.bonk(); this.bonk = 1; }
+        const kind = eo.event.kind;
+        if (kind === 'dumpster' || kind === 'hay') { audio.bonk(); audio.whoosh(0.5, 0.7, 0.8); }
+        else if (eo.event.delta > 0) { audio.boing(); if (isGroundKind(kind)) { this.bounceSpinUntil = this.tau + 0.9; this.spinRate = 9; } }
+        else { audio.bonk(); this.bonk = 1; if (isGroundKind(kind)) { this.bounceSpinUntil = this.tau + 0.6; this.spinRate = 6; } }
       }
     }
 
@@ -597,9 +592,9 @@ export class Engine {
     this.lateral += this.lateralVel * dt;
     this.bonk = Math.max(0, this.bonk - dt * 1.4);
 
-    // ---- sway by flight style (pure whimsy)
+    // ---- sway by suit personality (pure whimsy)
     const t = this.tau;
-    const st = this.planeDef.flight;
+    const st = this.suit.flight;
     let sx = 0, sy = 0, roll = 0, yaw = 0, pitch = 0;
     const wind = 0.08 * Math.sin(t * 0.63 + 1.7) + 0.05 * Math.sin(t * 1.31);
     switch (st) {
@@ -622,58 +617,77 @@ export class Engine {
     const air = grounded ? Math.max(0, 1 - (this.tau - plan.landT) / 0.3) : 1;
     sx = (sx + wind) * air; sy *= air; roll *= air; yaw *= air; pitch *= air;
     if (this.bonk > 0) { roll += Math.sin(this.bonk * 30) * 0.35 * this.bonk; sy -= this.bonk * 0.3; }
+
+    // ---- pose state machine
+    const descending = hNext < h - 0.05 && this.tau > plan.T * 0.4;
+    const tumbling = this.tau < plan.tuckTime || this.tau < this.bounceSpinUntil || !!plan.fumble;
     if (plan.fumble) {
-      // the plane catches an edge and tumbles: spin up over the first second, then flop onto the ground
-      const u = Math.min(1, t / Math.max(0.3, plan.landT));
       if (!this.fumbleShown && t > 0.2) { this.fumbleShown = true; audio.bonk(); }
-      const spin = u * u * 8;
-      if (plan.fumble === 'fold') { pitch += spin * 0.8; roll += Math.sin(t * 12) * 0.3 * u; }
-      else if (plan.fumble === 'gust') { roll += spin; yaw += Math.sin(t * 5) * 0.6 * u; sx += Math.sin(t * 3) * 1.5 * u; }
-      else if (plan.fumble === 'nosedive') { pitch -= spin * 0.6; yaw += spin * 0.3; }
-      else { roll += spin * 1.2; pitch += Math.sin(t * 9) * 0.4 * u; }
-      if (grounded) { roll = Math.PI * 0.9 + Math.sin(this.tau * 6) * 0.05 * speedFrac; pitch = 0.15; }
+      if (plan.fumble === 'fizzle') { this.spinRate += (3 - this.spinRate) * Math.min(1, dt * 2); steve.setPose('flail', 5); }
+      else if (plan.fumble === 'spinout') { this.spinRate = 16; steve.setPose('tuck', 8); }
+      else { this.spinRate += (7 - this.spinRate) * Math.min(1, dt * 2); steve.setPose('flail', 6); }
+    } else if (grounded) {
+      // the wipeout: somersaulting along the pavement, slowing with the skid
+      steve.setPose('flail', 10);
+      this.spinRate = 4 + 10 * speedFrac;
+    } else if (tumbling) {
+      steve.setPose('tuck', 10);
+    } else if (descending) {
+      steve.setPose('squirrel', 3.5);
+      this.spinRate += (0 - this.spinRate) * Math.min(1, dt * 4);
+    } else {
+      steve.setPose('superman', 4);
+      this.spinRate += (0 - this.spinRate) * Math.min(1, dt * 4);
+    }
+    if (tumbling || grounded) this.spin += this.spinRate * dt;
+    else {
+      // settle the spin to a whole turn so he unfurls facing the right way
+      const whole = Math.round(this.spin / (Math.PI * 2)) * Math.PI * 2;
+      this.spin += (whole - this.spin) * Math.min(1, dt * 5);
     }
 
-    // ---- place the plane
-    const g = this.plane.group;
+    // ---- place Steve
+    const g = steve.group;
     g.position.set(0, h + this.lift * 0.8, -s);
     const slope = THREE.MathUtils.clamp(Math.atan2(hNext - h, Math.max(0.05, 0.15 * Math.max(0.5, v))), -0.5, 0.5);
-    g.rotation.set(slope * 0.8 + pitch, 0, 0);
-    const body = this.plane.body;
+    g.rotation.set(0, 0, 0);
+    const body = steve.body;
     body.position.set(sx + this.lateral, sy, 0);
     body.rotation.set(0, yaw - this.lateral * 0.15, roll - (sx + this.lateral) * 0.25);
-    if (grounded && !plan.fumble) {
-      // skid along the ground
-      body.rotation.z = Math.sin(this.tau * 2) * 0.05 * speedFrac;
-      g.rotation.x = 0.03;
-    } else if (grounded) {
-      body.rotation.set(pitch, yaw, roll);
-      g.rotation.x = 0;
+    // orientation: prone for flight, spun by the tumble, pitched with the flight path
+    const proneBlend = tumbling ? 0 : 1;
+    const targetRx = PRONE * proneBlend + slope * 0.8 + pitch * (descending ? 0.5 : 0.2) - this.spin;
+    steve.root.rotation.set(targetRx, 0, tumbling ? 0 : -(roll * 0.3));
+    steve.root.position.set(0, tumbling ? 0 : 0.15, 0);
+    if (grounded && plan.ending === 'sprawl') {
+      // bounce along the ground while somersaulting
+      const skid = (this.tau - plan.landT) / Math.max(0.2, plan.T - plan.landT);
+      body.position.y = Math.abs(Math.sin(this.tau * 7)) * 0.5 * (1 - skid);
+      body.rotation.set(0, 0, 0);
+      steve.root.position.set(0, 0.55, 0);
     }
 
-    // ---- sparklers (visual jets)
-    for (const sp of this.sparklerLit) {
-      sp.age += dt;
-      const tip = this.plane.sparklerTips[sp.idx];
-      if (tip && sp.age < 1.4) {
+    // ---- bottle rockets (visual jets)
+    for (const r of this.rocketsLit) {
+      r.age += dt;
+      const tip = steve.rocketTips[r.idx];
+      if (tip && r.age < 1.4) {
         tip.getWorldPosition(this.tmpV);
         this.particles.emit({ pos: this.tmpV, vel: new THREE.Vector3(0, 0.4, 6), spread: 2.2, count: 4, life: 0.35, size: 0.08, endSize: 0.01, colors: ['#fff7b0', '#ffd166', '#ffffff', '#ff9a3c'], drag: 2 });
       }
     }
-    this.sparklerLit = this.sparklerLit.filter(sp => sp.age < 1.6);
+    this.rocketsLit = this.rocketsLit.filter(r => r.age < 1.6);
 
     // ---- camera: fixed on the centre line, smooth in height, trailing behind
     const vNorm = Math.min(1, v / 60);
-    const targetY = g.position.y + 2.4 + vNorm * 2.2;
+    const targetY = g.position.y + 2.0 + vNorm * 1.6;
     this.camY += (targetY - this.camY) * Math.min(1, dt * 3);
     const back = 7 + vNorm * 5;
     this.camera.position.set(0, this.camY, g.position.z + back);
-    // look a little past the plane, but keep the plane itself in the upper-middle of the frame
-    const lookY = (this.camY - 1.6 - vNorm * 1.2) * 0.45 + g.position.y * 0.55;
-    this.camera.lookAt(0, lookY, g.position.z - 14);
+    // keep Steve a little above the centre of the frame
+    this.camera.lookAt(0, g.position.y - 0.9 + (this.camY - targetY) * 0.5, g.position.z - 16);
 
-    // launcher fades out of relevance once we are away
-    this.launcher.visible = s < 80;
+    this.cannon.group.visible = s < 80;
 
     // ---- HUD
     const progress = s / plan.L;
@@ -681,23 +695,112 @@ export class Engine {
     this.hud.cash = s * this.cashPerUnit;
     this.hud.speed = v * rate;
     this.hud.progress = progress;
-    this.hud.fanSeconds = this.fanSeconds;
+    this.hud.blowerSeconds = this.blowerSeconds;
     this.hud.confetti = this.confetti;
-    this.hud.sparklers = this.sparklers;
-    this.hud.litSparklers = this.sparklerLit.length;
+    this.hud.rockets = this.rockets;
+    this.hud.litRockets = this.rocketsLit.length;
     this.events.onHud(this.hud);
 
-    // ---- landing
+    // ---- touchdown: hand over to the landing performance
     if (this.tau >= plan.T) {
-      if (this.landedAt < 0) { this.landedAt = this.flightClock; this.setState('landed'); }
-      else if (!this.resultSent && this.flightClock - this.landedAt > 0.9) {
-        this.resultSent = true;
-        this.hud.distance = this.result.distance;
-        this.hud.cash = this.result.payout;
-        this.events.onHud(this.hud);
-        this.events.onResult(this.result);
-      }
+      this.landedAt = 0;
+      this.landOrbit = 0;
+      this.hud.distance = this.result.distance;
+      this.hud.cash = this.result.payout;
+      this.events.onHud(this.hud);
+      this.setState('landed');
     }
-    void UP;
+  }
+
+  /**
+   * After the plan ends: the comedy. Sprawl, come round, get up gingerly,
+   * brush off, strike the pose. Or climb out of whatever he landed in.
+   */
+  private updateLanded(dt: number): void {
+    if (!this.plan || !this.steve || !this.result) return;
+    const plan = this.plan;
+    const steve = this.steve;
+    this.landedAt += dt;
+    const T = this.landedAt;
+    const g = steve.group;
+    const body = steve.body;
+    body.position.set(0, 0, 0);
+    body.rotation.set(0, 0, 0);
+    const ending = plan.fumble ? 'sprawl' : plan.ending;
+    let done = 5.0;
+
+    if (ending === 'sprawl') {
+      // whole turns so he lands flat, then the recovery routine
+      if (T < 1.1) {
+        steve.setPose('sprawl', 8);
+        const flat = Math.round(this.spin / (Math.PI * 2)) * Math.PI * 2;
+        this.spin += (flat - this.spin) * Math.min(1, dt * 8);
+        steve.root.rotation.set(Math.PI / 2 - this.spin, 0, 0);
+        steve.root.position.set(0, 0.22, 0);
+        if (Math.random() < dt * 6) {
+          // little stars circling the head
+          const a = Math.random() * Math.PI * 2;
+          this.particles.emit({ pos: this.tmpV.set(Math.cos(a) * 0.6, 1.0, g.position.z + 0.9 + Math.sin(a) * 0.4), vel: new THREE.Vector3(-Math.sin(a) * 1.5, 0.2, Math.cos(a) * 1.5), spread: 0.1, count: 1, life: 1.2, size: 0.22, endSize: 0.05, colors: ['#ffd166', '#ffffff'], drag: 0.2, spin: 6 });
+        }
+      } else if (T < 2.1) {
+        steve.setPose('sit', 5);
+        const k = Math.min(1, (T - 1.1) / 0.8);
+        steve.root.rotation.set((Math.PI / 2) * (1 - k) * 0.3, Math.PI * k * 0.0, 0);
+        steve.root.position.set(0, 0.22 + 0.33 * k, 0);
+        this.spin = 0;
+      } else if (T < 2.9) {
+        steve.setPose('gingerly', 4);
+        const k = Math.min(1, (T - 2.1) / 0.8);
+        steve.root.rotation.set(0, 0, 0);
+        steve.root.position.set(0, 0.55 + 0.4 * (k * k * (3 - 2 * k)), 0);
+      } else if (T < 3.5) { steve.setPose('brushL', 7); steve.root.position.set(0, 0.95, 0); }
+      else if (T < 4.1) { steve.setPose('brushR', 7); }
+      else if (T < 4.5) { steve.setPose('gingerly', 8); steve.root.rotation.set(0, Math.sin((T - 4.1) * 25) * 0.25, 0); }
+      else { steve.setPose('hero', 6); steve.root.rotation.set(0, 0, 0); }
+      g.rotation.set(0, 0, 0);
+      done = 5.4;
+    } else if (ending === 'dumpster') {
+      // hidden under the lid, then pops up in triumph
+      if (T < 1.4) { g.visible = false; }
+      else {
+        g.visible = true;
+        steve.setPose('triumph', 7);
+        steve.root.rotation.set(0, 0, 0);
+        const k = Math.min(1, (T - 1.4) / 0.4);
+        g.position.y = 0.3 + 0.9 * k;            // waist at the rim
+        steve.root.position.set(0, 0.95, 0);
+        this.spin = 0;
+        if (T > 2.4) steve.setPose('hero', 6);
+      }
+      done = 3.6;
+    } else {
+      // hay: legs kicking out of the pile, then up on top of it
+      if (T < 1.5) {
+        steve.setPose('flail', 8);
+        steve.root.rotation.set(Math.PI + Math.sin(T * 6) * 0.2, 0, 0);
+        steve.root.position.set(0, -0.6, 0);
+        g.position.y = 2.6;
+      } else {
+        steve.setPose(T < 2.4 ? 'triumph' : 'hero', 6);
+        steve.root.rotation.set(0, 0, 0);
+        const k = Math.min(1, (T - 1.5) / 0.4);
+        steve.root.position.set(0, 0.95, 0);
+        g.position.y = 2.6 + 1.2 * k;
+        this.spin = 0;
+      }
+      done = 3.8;
+    }
+
+    // slow orbit around the landing spot
+    this.landOrbit += dt * 0.35;
+    const r = 7.5;
+    const cx = Math.sin(this.landOrbit) * r, cz = g.position.z + Math.cos(this.landOrbit) * r;
+    this.camera.position.lerp(this.tmpV3.set(cx, g.position.y + 3.2, cz), Math.min(1, dt * 2.5));
+    this.camera.lookAt(0, g.position.y + 1.2, g.position.z);
+
+    if (!this.resultSent && T > done) {
+      this.resultSent = true;
+      this.events.onResult(this.result);
+    }
   }
 }

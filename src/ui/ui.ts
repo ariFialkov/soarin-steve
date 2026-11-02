@@ -2,11 +2,11 @@
 import { BOOST_CONFIG, TIERS, TIER_CONFIG, getRtp, setRtp, type BoostKind, type Tier } from '../core/config';
 import { round2, server, verifyRound, type RoundResult } from '../core/server';
 import { profile, resetProfile, saveProfile } from '../core/store';
-import { PLANES, planeById, planesForTier, type PlaneDef } from '../data/planes';
+import { SUITS, suitById, suitsForTier, type SuitDef } from '../data/suits';
 import { audio } from '../game/audio';
 import type { Engine, GameState, HudInfo } from '../game/engine';
 import type { FumbleKind } from '../game/flightPlan';
-import { planeThumbSvg } from './planeThumb';
+import { suitThumbSvg } from './suitThumb';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -75,7 +75,7 @@ export class UI {
       $('btn-back').classList.remove('hidden-now');
     } else if (s === 'betting') {
       $('btn-back').classList.add('hidden-now');
-      $('aim-hint').textContent = 'placing bet…';
+      $('aim-hint').textContent = 'fire in the hole…';
     } else if (s === 'flying') {
       $('fumble').classList.remove('show');
       this.setAimingHud(false);
@@ -95,13 +95,13 @@ export class UI {
     this.lastHud = now;
     $('hud-dist').textContent = info.distance >= 1000 ? (info.distance / 1000).toFixed(2) + 'k' : info.distance.toFixed(1);
     $('hud-cash').textContent = money(info.cash);
-    $('q-fan').textContent = `${info.fanSeconds.toFixed(1)}s`;
+    $('q-blower').textContent = `${info.blowerSeconds.toFixed(1)}s`;
     $('q-confetti').textContent = `×${info.confetti}`;
-    $('q-sparkler').textContent = `×${info.sparklers}`;
+    $('q-rockets').textContent = `×${info.rockets}`;
     const bar = $('boost-bar');
     for (const b of Array.from(bar.querySelectorAll<HTMLButtonElement>('.boost'))) {
       const k = b.dataset.kind as BoostKind;
-      const n = k === 'fan' ? info.fanSeconds : k === 'confetti' ? info.confetti : info.sparklers;
+      const n = k === 'blower' ? info.blowerSeconds : k === 'confetti' ? info.confetti : info.rockets;
       b.disabled = n <= 0.001;
       if (b.disabled && this.engine.boostMode === k) { this.engine.setBoostMode(null); b.classList.remove('active'); this.showBoostHint(); }
     }
@@ -115,7 +115,7 @@ export class UI {
     $('r-payout').textContent = money(r.payout);
     const stamp = $('result-stamp');
     const m = r.multiplier;
-    stamp.textContent = this.lastFumble ? 'Bad release' : m >= 10 ? 'INCREDIBLE!' : m >= 3 ? 'Big flight!' : m >= 1 ? 'Nice flight!' : m >= 0.5 ? 'Not bad' : 'Oof, a short hop';
+    stamp.textContent = this.lastFumble ? 'Misfire!' : m >= 10 ? 'LEGENDARY!' : m >= 3 ? 'What a stunt!' : m >= 1 ? 'Nice flight, Steve!' : m >= 0.5 ? 'He will walk it off' : 'Ouch. Short hop';
     this.lastFumble = null;
     stamp.classList.toggle('big', m >= 1);
     $('r-fair').innerHTML = `
@@ -134,10 +134,10 @@ export class UI {
 
   onFumble(kind: FumbleKind): void {
     const sub: Record<FumbleKind, string[]> = {
-      edge: ['caught an edge', 'clipped the band', 'snagged a wingtip'],
-      fold: ['folded over itself', 'the nose crumpled', 'soft fold, hard luck'],
-      gust: ['a gust got under it', 'cross-wind on release', 'the wind had other plans'],
-      nosedive: ['straight into the asphalt', 'nose-heavy', 'too much dart, not enough glide'],
+      fizzle: ['wet powder', 'that was more of a plop', 'somebody forgot the gunpowder'],
+      rim: ['clipped the rim on the way out', 'helmet met barrel', 'caught the muzzle'],
+      gust: ['a gust got under him', 'cross-wind on launch', 'the wind had other plans'],
+      spinout: ['too much tuck', 'over-rotated', 'spun out of the barrel'],
     };
     const el = $('fumble');
     el.querySelector('.sub')!.textContent = sub[kind][Math.floor(Math.random() * sub[kind].length)];
@@ -157,7 +157,7 @@ export class UI {
   // ------------------------------------------------------------ HUD helpers
   private setAimingHud(aiming: boolean): void {
     $('aim-hint').classList.toggle('hidden', !aiming);
-    $('aim-hint').innerHTML = '<div class="pull-meter"><div class="pull-fill" id="pull-fill"></div></div><div>pull the plane back, then let go</div>';
+    $('aim-hint').innerHTML = '<div class="pull-meter"><div class="pull-fill" id="pull-fill"></div></div><div>drag down to pack the powder, let go to fire</div>';
     $('boost-bar').classList.toggle('hidden', aiming);
     $('boost-hint').textContent = '';
   }
@@ -166,7 +166,7 @@ export class UI {
     const cfg = TIER_CONFIG[profile.tier];
     const cost = server.boostCost(profile.tier, profile.boosts);
     $('hud-wager').textContent = money(cfg.stake + cost);
-    $('hud-plane').textContent = planeById(profile.selected[profile.tier]).name;
+    $('hud-plane').textContent = suitById(profile.selected[profile.tier]).name;
   }
 
   private refreshBoostBar(): void {
@@ -189,9 +189,9 @@ export class UI {
     const m = this.engine.boostMode;
     const touch = matchMedia('(pointer: coarse)').matches;
     $('boost-hint').textContent =
-      m === 'fan' ? (touch ? 'hold your thumb behind the plane to blow it along' : 'click and hold behind the plane to blow it along') :
-      m === 'confetti' ? (touch ? 'tap behind the plane to fire' : 'click behind the plane to fire') :
-      m === 'sparkler' ? (touch ? 'tap anywhere to light the next sparkler' : 'click anywhere to light the next sparkler') : '';
+      m === 'blower' ? (touch ? 'hold your thumb behind Steve to blow him along' : 'click and hold behind Steve to blow him along') :
+      m === 'confetti' ? (touch ? 'tap behind Steve to fire' : 'click behind Steve to fire') :
+      m === 'rockets' ? (touch ? 'tap anywhere to light the next rocket' : 'click anywhere to light the next rocket') : '';
   }
 
   // ------------------------------------------------------------ menu widgets
@@ -222,7 +222,7 @@ export class UI {
   }
 
   private updateBoostBadge(): void {
-    const n = profile.boosts.fan + profile.boosts.confetti + profile.boosts.sparkler;
+    const n = profile.boosts.blower + profile.boosts.confetti + profile.boosts.rockets;
     const el = $('boost-count');
     el.hidden = n === 0;
     el.textContent = String(n);
@@ -245,11 +245,11 @@ export class UI {
   private openHangar(tier: Tier = profile.tier): void {
     const tabs = TIERS.map(t => `<button class="${t === tier ? 'active' : ''}" data-tier="${t}" style="--c:${TIER_CONFIG[t].accent}">${TIER_CONFIG[t].label} · ${money(TIER_CONFIG[t].stake)}</button>`).join('');
     this.openPanel(`
-      <h2>Hangar</h2>
-      <p class="muted">Your stake is set by the plane's folding tier. Trickier folds fly further on a good day.</p>
+      <h2>Wardrobe</h2>
+      <p class="muted">Your stake is set by the suit's tier. The flashier the suit, the bigger the show on a good day.</p>
       <div class="tabs">${tabs}</div>
       <div class="grid" id="hangar-grid"></div>
-      <p class="muted" style="margin-top:12px">Plane designs after the public-domain catalogue at Fold 'N' Fly.</p>`);
+      <p class="muted" style="margin-top:12px">Each suit gives Steve a different flying style: steady, swooping, rocking, twirling, fluttering, darting or drifting.</p>`);
     for (const b of Array.from(this.panelBody.querySelectorAll<HTMLButtonElement>('.tabs button'))) {
       b.addEventListener('click', () => this.openHangar(b.dataset.tier as Tier));
     }
@@ -259,15 +259,15 @@ export class UI {
   private renderHangarGrid(tier: Tier): void {
     const grid = $('hangar-grid');
     grid.innerHTML = '';
-    for (const p of planesForTier(tier)) grid.appendChild(this.planeCard(p));
+    for (const p of suitsForTier(tier)) grid.appendChild(this.suitCard(p));
   }
 
-  private planeCard(p: PlaneDef): HTMLElement {
+  private suitCard(p: SuitDef): HTMLElement {
     const owned = profile.owned.includes(p.id);
     const selected = profile.selected[p.tier] === p.id && profile.tier === p.tier;
     const card = document.createElement('div');
     card.className = 'card' + (selected ? ' selected' : '') + (owned ? '' : ' locked');
-    card.innerHTML = `${planeThumbSvg(p, 96)}
+    card.innerHTML = `${suitThumbSvg(p, 96)}
       <div class="name">${p.name}</div>
       <div class="tags">${p.tags.map(t => `<span>${t}</span>`).join('')}</div>
       <div class="blurb">${p.blurb}</div>
@@ -277,7 +277,7 @@ export class UI {
         profile.selected[p.tier] = p.id;
         this.setTier(p.tier);
         this.renderHangarGrid(p.tier);
-        this.toast(`${p.name} ready on the launcher`);
+        this.toast(`Steve is wearing ${p.name}`);
       } else {
         if (card.querySelector('.confirm')) return;
         const c = document.createElement('div');
@@ -310,7 +310,7 @@ export class UI {
     const cfg = TIER_CONFIG[profile.tier];
     const rows = (Object.keys(BOOST_CONFIG) as BoostKind[]).map(k => {
       const b = BOOST_CONFIG[k];
-      const ico = k === 'fan' ? '🌀' : k === 'confetti' ? '🎉' : '✨';
+      const ico = k === 'blower' ? '🍃' : k === 'confetti' ? '🎉' : '🚀';
       return `<div class="shop-row" data-kind="${k}">
         <div class="ico">${ico}</div>
         <div><div class="name">${b.label} <span class="muted">· ${money(round2(b.price * cfg.stake))} per ${b.unit}</span></div><div class="blurb">${b.blurb}</div></div>
@@ -319,10 +319,10 @@ export class UI {
     }).join('');
     this.openPanel(`
       <h2>Boosts</h2>
-      <p class="muted">Carry boosts into your next flight and use them whenever you like. Their cost joins your ${money(cfg.stake)} stake as part of the wager when you launch, and unused boosts are not refunded.</p>
+      <p class="muted">Carry boosts into Steve's next flight and use them whenever you like. Their cost joins your ${money(cfg.stake)} stake as part of the wager when you fire, and unused boosts are not refunded.</p>
       ${rows}
       <div class="total"><span>Wager next round</span><span id="shop-total"></span></div>
-      <div class="muted" style="margin-top:4px">Boosts only push a plane that is already moving: a stopped plane stays stopped.</div>`);
+      <div class="muted" style="margin-top:4px">Boosts only push a Steve who is already moving: once he is down, he is down.</div>`);
     const refresh = () => {
       for (const row of Array.from(this.panelBody.querySelectorAll<HTMLElement>('.shop-row'))) {
         const k = row.dataset.kind as BoostKind;
@@ -360,10 +360,10 @@ export class UI {
       <div class="setting"><span>Demo wallet</span><span><button class="switch" id="s-wallet">Reset to ${money(1000)}</button></span></div>
       <div class="setting"><span>Everything (planes, boosts, wallet)</span><span><button class="switch" id="s-reset">Reset profile</button></span></div>
       <h3>How the game decides</h3>
-      <p class="muted">Every round is settled by the game server the instant you let go of the launcher, before the plane moves. The server publishes a hash of its seed before the bet, then reveals the seed afterwards so you can verify the result. Your pull, the boosts and the scenery are all just the show.</p>
+      <p class="muted">Every round is settled by the game server the instant the cannon fires, before Steve moves. The server publishes a hash of its seed before the bet, then reveals the seed afterwards so you can verify the result. The powder charge, the boosts and the scenery are all just the show.</p>
       <h3>Credits</h3>
-      <p class="credits">Paper airplane names, tiers and traits after the public-domain designs catalogued by <a href="https://www.foldnfly.com" target="_blank" rel="noopener">Fold 'N' Fly</a>. Thank you for teaching the world to fold.<br>Built with <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a>.</p>
-      <p class="muted">Paper Planes ${APP_VERSION} · ${PLANES.length} planes in the hangar · ${profile.rounds} rounds flown</p>`);
+      <p class="credits">Soarin' Steve is a work of fiction; no stuntmen were harmed. Built with <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a>.</p>
+      <p class="muted">Soarin' Steve ${APP_VERSION} · ${SUITS.length} suits in the wardrobe · ${profile.rounds} shows flown</p>`);
     $('s-sound').addEventListener('click', () => { profile.sound = !profile.sound; saveProfile(); audio.setEnabled(profile.sound); this.openSettings(); });
     $('s-quality').addEventListener('click', () => { profile.quality = profile.quality === 'high' ? 'low' : 'high'; saveProfile(); this.openSettings(); });
     $('s-rtp').addEventListener('change', e => {

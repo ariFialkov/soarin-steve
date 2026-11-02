@@ -1,12 +1,13 @@
-# Paper Planes
+# Soarin' Steve
 
-A whimsical "launch and watch" betting game. Pull a paper plane back on a slingshot, let go, and
-watch it ride the wind past boost pads and obstacles while a cash track ticks up beside it.
-Runs as a PWA on desktop and mobile.
+A whimsical "launch and watch" betting game. Pack the powder, fire the circus cannon, and watch
+Soarin' Steve, daredevil human cannonball, fly across a sprawling city past boosts and obstacles
+while a cash track ticks up along the avenue below. He tucks, soars, fans out, wipes out, and gets
+back up for the pose. Runs as a PWA on desktop and mobile.
 
-> **Important design note.** The game *looks* skill based (how far you pull, when you use a boost),
-> but every round is settled by the server module the instant you release the launcher, before the
-> plane moves. The flight is theatre that lands exactly on the resolved result. See
+> **Important design note.** The game *looks* skill based (how hard you pack the cannon, when you
+> use a boost), but every round is settled by the server module the instant the cannon fires,
+> before Steve moves. The flight is theatre that lands exactly on the resolved result. See
 > [How a round is decided](#how-a-round-is-decided).
 
 ## Running it
@@ -24,9 +25,9 @@ visit it works offline.
 
 ## How a round is decided
 
-1. The player picks a tier (which fixes the stake) and a plane from that tier, and optionally
-   buys mid-flight boosts. Boost costs are added to the wager.
-2. When the launcher is released, the client sends one bet request to `src/core/server.ts`.
+1. The player picks a tier (which fixes the stake) and a stunt suit from that tier, and
+   optionally buys mid-flight boosts. Boost costs are added to the wager.
+2. When the cannon fires, the client sends one bet request to `src/core/server.ts`.
    That module is a mock of a game server, written like a remote API so it can be moved to a
    real backend untouched. It:
    - debits the total wager,
@@ -36,14 +37,17 @@ visit it works offline.
    - returns the payout, the distance (`multiplier × tier base distance`) and a world seed.
 3. Only then does the client build a flight plan (`src/game/flightPlan.ts`): a precomputed
    position/velocity/height curve that ends at that distance, with boosts and obstacles placed
-   where the curve speeds up or slows down. Obstacles are chosen to suit the plane's altitude at
-   that point (bunting and pigeons low down, cranes and billboards mid-height, gulls, hot-air
-   balloons, banner planes, blimps and airliners up high) and never spawn within the first fifth
-   of the flight, so they appear out of the haze among the city's ordinary sky traffic rather
-   than popping in next to the launcher. The scenery explains the result; it never decides it.
-4. Mid-flight boosts (fan, confetti cannon, sparklers) only change the *rate* at which the
-   plan is played back, scaled by how fast the plane is already going. A stopped plane cannot
-   be moved. The end point cannot change.
+   where the curve speeds up or slows down. Objects are chosen to suit Steve's altitude at that
+   point: aerial ones (gulls, balloons, banner planes, blimps, airliner jetwash, fireworks) and
+   ground ones that bend the height curve down to meet them and bounce him back up (trampolines,
+   bouncy castles, tyre stacks, industrial fans) or barely (traffic cones, a hot dog cart, a
+   mattress). Some flights end in a dumpster or a hay truck, which stop him dead with no skid.
+   Nothing static spawns within view of the cannon, so obstacles appear out of the haze among the
+   city's ordinary traffic. Very short results become a misfire. The scenery explains the result;
+   it never decides it.
+4. Mid-flight boosts (leaf blower, confetti cannon, bottle rockets) only change the *rate* at
+   which the plan is played back, scaled by how fast Steve is already going. Once he is down he
+   is down. The end point cannot change.
 
 Every result carries the hashed server seed (published before the bet), the revealed seed, the
 client seed and the nonce, and the result card re-verifies the outcome from them.
@@ -74,34 +78,37 @@ into three merged meshes (plain, windowed, glass) so the whole view stays at a c
 draw calls. The cash track is painted down the avenue in a slightly different shade of whatever
 the avenue is made of in that district.
 
-## Planes
+## Steve and his wardrobe
 
-58 planes across four folding tiers (Easy $1, Medium $5, Hard $20, Expert $100). A 1.00× flight
-crosses roughly 420 m of city on Easy up to 1.2 km on Expert; longer flights are compressed
-logarithmically so even a 500× result fits in one sitting. Each tier has a
-free default plane; the rest are bought from the wallet. Names, tiers and trait tags follow the
-public-domain catalogue at [Fold 'N' Fly](https://www.foldnfly.com), credited in-game under
-Settings → Credits. Models are generated procedurally from eight silhouettes with paper textures,
-crease lines and seven flight "personalities" (steady, swoop, rockabye, twirl, flutter, dart,
-drift).
+Steve is a jointed figure built from primitives (`src/game/steve.ts`) with a library of poses
+(cannonball tuck, superman, flying squirrel, flail, sprawl, sit, gingerly, brush, hero, triumph)
+that the engine blends between as the flight progresses, plus a tumbling spin for the launch,
+bounces and the wipeout. After touchdown he lies stunned with stars circling, sits up, stands
+gingerly, brushes off both shoulders, shakes it off and strikes the pose before the result card.
+
+58 stunt suits across four tiers (Rookie $1, Pro $5, Daredevil $20, Legend $100) set his colours,
+emblem and cape and give him one of seven flight personalities (steady, swoop, rockabye, twirl,
+flutter, dart, drift). A 1.00× flight crosses roughly 420 m of city on Rookie up to 1.2 km on
+Legend; longer flights are compressed logarithmically so even a 500× result fits in one sitting.
+Each tier has a free default suit; the rest are bought from the wallet.
 
 ## Controls
 
 - **Menu**: tap anywhere outside the side buttons to play. Side groups slide away.
-- **Launch**: drag the plane back (down on screen) and let go.
-- **Handheld fan**: select it, then press and hold behind the plane (drag to move, tap to jump).
+- **Fire**: drag down to pack the powder (the barrel rises and shakes), let go to fire.
+- **Leaf blower**: select it, then press and hold behind Steve (drag to move, tap to jump).
   Behind pushes forward, below lifts, off to one side nudges sideways.
-- **Confetti cannon**: select it, then tap behind the plane. Slightly below gives lift.
-- **Sparklers**: strapped to the tail before the round. Select, then tap to light the next one;
-  tap quickly to fire several.
+- **Confetti cannon**: select it, then tap behind Steve. Slightly below gives lift.
+- **Bottle rockets**: strapped to his backpack before the round. Select, then tap to light the
+  next one; tap quickly to fire several.
 
 ## Layout
 
 ```
 src/core      config (RTP, tiers, boosts), RNG, outcome maths, mock server, player profile
-src/data      the plane bank
-src/game      three.js engine, flight plan, world generator, plane models, particles, audio
-src/ui        DOM menu / HUD / hangar / shop / settings, SVG plane thumbnails
+src/data      the suit wardrobe
+src/game      three.js engine, Steve's rig and poses, cannon, flight plan, city, events, audio
+src/ui        DOM menu / HUD / wardrobe / shop / settings, SVG suit thumbnails
 tests         node:test checks for the economy and flight planner
 ```
 
@@ -109,7 +116,7 @@ tests         node:test checks for the economy and flight planner
 
 - Replace `src/core/server.ts` with real HTTP calls; the request/response types are already
   the API contract. Keep the outcome maths server side.
-- Wallet, plane ownership and boost inventory must live on the server too; `src/core/store.ts`
+- Wallet, suit ownership and boost inventory must live on the server too; `src/core/store.ts`
   is a local demo profile.
 - The RTP setting in the Settings panel exists for demos and should be removed from a real
   client.

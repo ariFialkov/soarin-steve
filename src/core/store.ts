@@ -1,6 +1,6 @@
 /** Persistent player profile: owned planes, selections, settings. */
 import { TIERS, type BoostKind, type Tier } from './config';
-import { PLANES, defaultPlaneFor } from '../data/planes';
+import { SUITS, defaultSuitFor } from '../data/suits';
 
 export interface Profile {
   owned: string[];
@@ -13,16 +13,16 @@ export interface Profile {
   rounds: number;
 }
 
-const KEY = 'paperplanes.profile.v1';
+const KEY = 'soarinsteve.profile.v1';
 
 function fresh(): Profile {
   const selected = {} as Record<Tier, string>;
-  for (const t of TIERS) selected[t] = defaultPlaneFor(t).id;
+  for (const t of TIERS) selected[t] = defaultSuitFor(t).id;
   return {
-    owned: TIERS.map(t => defaultPlaneFor(t).id),
+    owned: TIERS.map(t => defaultSuitFor(t).id),
     selected,
     tier: 'easy',
-    boosts: { fan: 0, confetti: 0, sparkler: 0 },
+    boosts: { blower: 0, confetti: 0, rockets: 0 },
     sound: true,
     quality: 'high',
     clientSeed: Math.random().toString(36).slice(2, 10),
@@ -39,9 +39,9 @@ function loadProfile(): Profile {
       const merged: Profile = { ...base, ...p, selected: { ...base.selected, ...(p.selected || {}) }, boosts: { ...base.boosts, ...(p.boosts || {}) } };
       // make sure defaults are always owned and selections are valid
       for (const t of TIERS) {
-        const d = defaultPlaneFor(t).id;
+        const d = defaultSuitFor(t).id;
         if (!merged.owned.includes(d)) merged.owned.push(d);
-        const sel = PLANES.find(pl => pl.id === merged.selected[t]);
+        const sel = SUITS.find(pl => pl.id === merged.selected[t]);
         if (!sel || sel.tier !== t || !merged.owned.includes(sel.id)) merged.selected[t] = d;
       }
       return merged;

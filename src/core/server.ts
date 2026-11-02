@@ -17,7 +17,7 @@ import { Rng, randomHex, sha256 } from './rng';
 
 export interface BetRequest {
   tier: Tier;
-  planeId: string;
+  suitId: string;
   boosts: Record<BoostKind, number>;
   clientSeed: string;
 }
@@ -25,7 +25,7 @@ export interface BetRequest {
 export interface RoundResult {
   roundId: string;
   tier: Tier;
-  planeId: string;
+  suitId: string;
   stake: number;
   boostCost: number;
   totalWager: number;
@@ -42,8 +42,8 @@ export interface RoundResult {
   balanceAfter: number;
 }
 
-const WALLET_KEY = 'paperplanes.wallet';
-const NONCE_KEY = 'paperplanes.nonce';
+const WALLET_KEY = 'soarinsteve.wallet';
+const NONCE_KEY = 'soarinsteve.nonce';
 
 function load(key: string, fallback: number): number {
   try {
@@ -134,7 +134,7 @@ class MockServer {
     return {
       roundId: randomHex(8),
       tier: req.tier,
-      planeId: req.planeId,
+      suitId: req.suitId,
       stake,
       boostCost,
       totalWager,

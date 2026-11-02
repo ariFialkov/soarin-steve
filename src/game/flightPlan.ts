@@ -7,15 +7,20 @@
  * which tau advances, so the end point is untouchable.
  */
 import { Rng } from '../core/rng';
-import type { FlightStyle } from '../data/planes';
+import type { FlightStyle } from '../data/suits';
 import { LAUNCH_H } from './constants';
 
 export type EventKind =
-  | 'vent' | 'fountain' | 'burner' | 'firework' | 'jetwash' | 'thermal'                       // boosts
-  | 'gulls' | 'pigeons' | 'hotair' | 'propplane' | 'blimp' | 'crane' | 'billboard' | 'bunting'  // obstacles
-  | 'kite' | 'drone' | 'raincloud';
+  | 'vent' | 'fountain' | 'burner' | 'firework' | 'jetwash' | 'thermal'                       // aerial boosts
+  | 'trampoline' | 'castle' | 'tyres' | 'bigfan'                                             // ground boosts (bounce / lift)
+  | 'gulls' | 'pigeons' | 'hotair' | 'propplane' | 'blimp' | 'crane' | 'billboard' | 'bunting'  // aerial obstacles
+  | 'kite' | 'drone' | 'raincloud'
+  | 'cones' | 'hotdog' | 'mattress'                                                          // ground obstacles
+  | 'dumpster' | 'hay';                                                                      // endings
 
-export type FumbleKind = 'edge' | 'fold' | 'gust' | 'nosedive';
+export type Ending = 'sprawl' | 'dumpster' | 'hay';
+
+export type FumbleKind = 'fizzle' | 'rim' | 'gust' | 'spinout';
 
 export interface PlanEvent {
   t: number;          // plan time
@@ -38,20 +43,28 @@ export interface FlightPlan {
   h: Float32Array;
   landT: number;      // time the plane touches down
   unitsPerMetre: number;
-  /** Set for very short results: the plane fumbles on release instead of meeting obstacles. */
+  /** Set for very short results: a misfire instead of a flight. */
   fumble: FumbleKind | null;
+  /** How the flight ends: a tumbling skid, or stopped dead by something at the end. */
+  ending: Ending;
+  tuckTime: number;   // seconds in the cannonball tuck before unfurling
 }
 
 /** Boost / obstacle kinds, with the altitude band each one makes sense at. */
-const BOOSTS: { kind: EventKind; minH: number; maxH: number }[] = [
+interface KindDef { kind: EventKind; minH: number; maxH: number; ground?: { padH: number; rebound: [number, number] } }
+const BOOSTS: KindDef[] = [
   { kind: 'vent', minH: 0, maxH: 18 },
   { kind: 'fountain', minH: 0, maxH: 26 },
   { kind: 'thermal', minH: 0, maxH: 40 },
   { kind: 'burner', minH: 12, maxH: 999 },
   { kind: 'firework', minH: 3, maxH: 999 },
   { kind: 'jetwash', minH: 20, maxH: 999 },
+  { kind: 'trampoline', minH: 0, maxH: 42, ground: { padH: 1.3, rebound: [9, 16] } },
+  { kind: 'castle', minH: 0, maxH: 42, ground: { padH: 3.6, rebound: [7, 13] } },
+  { kind: 'tyres', minH: 0, maxH: 36, ground: { padH: 1.6, rebound: [6, 11] } },
+  { kind: 'bigfan', minH: 0, maxH: 44, ground: { padH: 2.4, rebound: [10, 18] } },
 ];
-const OBSTACLES: { kind: EventKind; minH: number; maxH: number }[] = [
+const OBSTACLES: KindDef[] = [
   { kind: 'bunting', minH: 0, maxH: 11 },
   { kind: 'pigeons', minH: 3, maxH: 16 },
   { kind: 'kite', minH: 4, maxH: 40 },
@@ -63,7 +76,13 @@ const OBSTACLES: { kind: EventKind; minH: number; maxH: number }[] = [
   { kind: 'propplane', minH: 14, maxH: 999 },
   { kind: 'raincloud', minH: 18, maxH: 999 },
   { kind: 'blimp', minH: 24, maxH: 999 },
+  { kind: 'cones', minH: 0, maxH: 34, ground: { padH: 0.9, rebound: [1.5, 3] } },
+  { kind: 'hotdog', minH: 0, maxH: 36, ground: { padH: 1.8, rebound: [2, 4] } },
+  { kind: 'mattress', minH: 0, maxH: 38, ground: { padH: 0.9, rebound: [1, 2.5] } },
 ];
+const GROUND_KINDS = new Map<EventKind, { padH: number; rebound: [number, number] }>();
+for (const k of [...BOOSTS, ...OBSTACLES]) if (k.ground) GROUND_KINDS.set(k.kind, k.ground);
+export function isGroundKind(k: EventKind): boolean { return GROUND_KINDS.has(k); }
 
 /** Kinds that can appear close to the launcher: they fly in or launch from the ground, so they never pop into view. */
 const NEAR_OK = new Set<EventKind>(['gulls', 'drone', 'propplane', 'jetwash', 'firework']);
@@ -91,6 +110,11 @@ export function buildFlightPlan(opts: {
   const unitsPerMetre = L / opts.distanceMetres;
 
   if (L < FUMBLE_L) return buildFumblePlan(rng, L, opts.power, unitsPerMetre);
+
+  // How the flight ends. Something that stops him dead keeps some of his speed right to the end.
+  const endRoll = rng.next();
+  const ending: Ending = endRoll < 0.68 ? 'sprawl' : endRoll < 0.86 ? 'dumpster' : 'hay';
+  const vEndFrac = ending === 'sprawl' ? 0 : rng.range(0.22, 0.4);
 
   // Launch speed from the pull (visual flavour). Duration follows from it so
   // that a plain linear decay would stop exactly at L.
@@ -127,13 +151,14 @@ export function buildFlightPlan(opts: {
     const deltas: number[] = new Array(n).fill(0);
     for (let i = 0; i < n; i++) if (i !== solveIdx) deltas[i] = rng.range(-amp, amp) * v0 * (rng.chance(0.5) ? 1 : 0.6);
 
-    // With drag k = (v0 + Σδ)/T (so v(T) = 0), the distance constraint reduces to
-    //   L = v0·T/2 + Σ δi·(T/2 − ti)
+    // With drag k = (v0 + Σδ − vEnd)/T (so v(T) = vEnd), the distance constraint reduces to
+    //   L = (v0 + vEnd)·T/2 + Σ δi·(T/2 − ti)
+    const vEnd = vEndFrac * v0;
     let acc = 0;
     for (let i = 0; i < n; i++) if (i !== solveIdx) acc += deltas[i] * (T / 2 - times[i]);
-    deltas[solveIdx] = (L - (v0 * T) / 2 - acc) / (T / 2 - times[solveIdx]);
+    deltas[solveIdx] = (L - ((v0 + vEnd) * T) / 2 - acc) / (T / 2 - times[solveIdx]);
     const sum = deltas.reduce((a, b) => a + b, 0);
-    const kk = (v0 + sum) / T;
+    const kk = (v0 + sum - vEnd) / T;
     if (kk <= 0) continue;
 
     // validate: v stays comfortably positive until T, deltas are readable but not absurd
@@ -147,8 +172,8 @@ export function buildFlightPlan(opts: {
       prevT = times[i];
     }
     if (!valid) continue;
-    const vEnd = v - kk * (T - prevT);
-    if (Math.abs(vEnd) > 1e-6 * v0 + 1e-9) continue;
+    const vAtEnd = v - kk * (T - prevT);
+    if (Math.abs(vAtEnd - vEnd) > 1e-6 * v0 + 1e-9) continue;
 
     k = kk;
     events = times.map((t, i) => {
@@ -159,13 +184,15 @@ export function buildFlightPlan(opts: {
     ok = true;
   }
 
+  let vEndFinal = vEndFrac * v0;
   if (!ok) {
-    // Fallback: no events, pure linear decay. Still ends exactly at L.
+    // Fallback: no events, pure linear decay to a sprawl. Still ends exactly at L.
     events = [];
-    k = (2 * v0) / T;
     v0 = (2 * L) / T;
     k = v0 / T;
+    vEndFinal = 0;
   }
+  const endingFinal: Ending = ok ? ending : 'sprawl';
 
   // Sample s(t), v(t)
   const dt = 1 / 60;
@@ -179,7 +206,7 @@ export function buildFlightPlan(opts: {
     while (ei < events.length && events[ei].t <= t) { v += events[ei].delta; events[ei].s = s; ei++; }
     if (t >= T) { v = 0; s = L; }
     sArr[i] = s; vArr[i] = v;
-    v = Math.max(0, v - k * dt);
+    v = Math.max(vEndFinal, v - k * dt);
     s += v * dt;
     if (s > L) s = L;
   }
@@ -187,9 +214,10 @@ export function buildFlightPlan(opts: {
   sArr[N - 1] = L; vArr[N - 1] = 0;
 
   // Height profile: a smooth arc plus bumps at events, touching down just before the end.
-  const h0 = LAUNCH_H + 1.8;
+  const h0 = LAUNCH_H + 3.6;
   const peak = 2 + (8 + 16 * opts.angle) * Math.min(1, L / 150) + Math.min(40, L / 32);
-  const landT = Math.max(T * 0.86, T - 1.8);
+  const landT = endingFinal === 'sprawl' ? Math.max(T * 0.86, T - 1.8) : T;
+  const groundH = endingFinal === 'dumpster' ? 1.6 : endingFinal === 'hay' ? 2.6 : 0.3;
   const styleLift = opts.style === 'swoop' ? 1.25 : opts.style === 'flutter' ? 0.8 : 1;
   for (let i = 0; i < N; i++) {
     const t = i * dt;
@@ -206,35 +234,75 @@ export function buildFlightPlan(opts: {
     if (t > landT) {
       const q = Math.min(1, (t - landT) / Math.max(0.01, T - landT));
       const ease = 1 - Math.pow(1 - q, 2);
-      const groundH = 0.3;
-      h = h * (1 - ease) + groundH * ease;
+      h = h * (1 - ease) + 0.3 * ease;
     }
     hArr[i] = Math.max(0.3, h);
   }
-  // make sure the glide into the landing is smooth: blend last airborne second downward
-  for (let i = 0; i < N; i++) {
-    const t = i * dt;
-    if (t > landT - 2 && t <= landT) {
-      const q = (t - (landT - 2)) / 2;
-      const target = hArr[Math.min(N - 1, Math.round(landT / dt))];
-      hArr[i] = hArr[i] * (1 - q * q * 0.5) + target * q * q * 0.5;
+  // glide into the landing: blend the last stretch down to the landing height
+  {
+    const win = endingFinal === 'sprawl' ? 2 : 1.6;
+    const target = endingFinal === 'sprawl' ? hArr[Math.min(N - 1, Math.round(landT / dt))] : groundH;
+    for (let i = 0; i < N; i++) {
+      const t = i * dt;
+      if (t > landT - win && t <= landT) {
+        const q = (t - (landT - win)) / win;
+        const w = endingFinal === 'sprawl' ? q * q * 0.5 : q * q * (3 - 2 * q);
+        hArr[i] = hArr[i] * (1 - w) + target * w;
+      } else if (t > landT && endingFinal !== 'sprawl') hArr[i] = groundH;
     }
   }
 
   // Now that the height profile exists, pick an object that makes sense at each event's altitude.
   let lastKind: EventKind | null = null;
-  for (const e of events) {
+  events.forEach((e, idx) => {
     const h = hArr[Math.min(N - 1, Math.round(e.t / dt))];
+    const gapBefore = idx === 0 ? e.t : e.t - events[idx - 1].t;
+    const gapAfter = idx === events.length - 1 ? landT - e.t : events[idx + 1].t - e.t;
+    const groundOk = gapBefore > 1.6 && gapAfter > 2.2 && e.t < landT - 2.5 && e.s >= STATIC_MIN_S;
     const table = e.delta > 0 ? BOOSTS : OBSTACLES;
-    const allowed = table.filter(o => e.s >= STATIC_MIN_S || NEAR_OK.has(o.kind));
+    const allowed = table.filter(o => (e.s >= STATIC_MIN_S || NEAR_OK.has(o.kind)) && (!o.ground || groundOk));
     let options = allowed.filter(o => h >= o.minH && h <= o.maxH && o.kind !== lastKind);
     if (!options.length) options = allowed.filter(o => h >= o.minH && h <= o.maxH);
     if (!options.length) options = allowed.filter(o => NEAR_OK.has(o.kind));
-    e.kind = rng.pick(options).kind;
+    // ground kinds get a bias so they show up reasonably often when the altitude allows
+    const groundOpts = options.filter(o => o.ground);
+    e.kind = (groundOpts.length && rng.chance(0.7) ? rng.pick(groundOpts) : rng.pick(options)).kind;
     lastKind = e.kind;
-  }
+  });
 
-  return { L, T, v0, events, dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre, fumble: null };
+  // Ground events: dip down to the pad and bounce back up (boosts high, obstacles barely).
+  const base = Float32Array.from(hArr);
+  events.forEach((e, idx) => {
+    const g = GROUND_KINDS.get(e.kind);
+    if (!g) return;
+    const gapBefore = idx === 0 ? e.t : e.t - events[idx - 1].t;
+    const gapAfter = idx === events.length - 1 ? landT - e.t : events[idx + 1].t - e.t;
+    const hAt = base[Math.min(N - 1, Math.round(e.t / dt))];
+    const wb = Math.min(0.45 * gapBefore, Math.max(0.8, Math.min(2.2, 0.7 + hAt / 18)));
+    const wa = Math.min(0.45 * gapAfter, 1.4);
+    const rebound = rng.range(g.rebound[0], g.rebound[1]);
+    e.lift = rebound;
+    const i0 = Math.max(0, Math.floor((e.t - wb) / dt)), i1 = Math.min(N - 1, Math.ceil((e.t + wa) / dt));
+    const hStart = base[i0], hEnd = base[i1];
+    for (let i = i0; i <= i1; i++) {
+      const t = i * dt;
+      if (t <= e.t) {
+        const q = Math.min(1, Math.max(0, (t - (e.t - wb)) / wb));
+        const w = q * q * (3 - 2 * q);
+        hArr[i] = hStart * (1 - w) + g.padH * w;
+      } else {
+        const q = Math.min(1, (t - e.t) / wa);
+        const w = q * q * (3 - 2 * q);
+        hArr[i] = g.padH * (1 - w) + hEnd * w + rebound * Math.sin(Math.PI * q);
+      }
+    }
+  });
+
+  // The ending object sits exactly at the finish line.
+  if (endingFinal !== 'sprawl') events.push({ t: T, s: L, delta: 0, kind: endingFinal, lift: 0, x: 0 });
+
+  const tuckTime = 0.55 + 0.35 * opts.power;
+  return { L, T, v0, events, dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre, fumble: null, ending: endingFinal, tuckTime };
 }
 
 /**
@@ -243,7 +311,7 @@ export function buildFlightPlan(opts: {
  * obstacles are needed, so nothing has to be spawned in front of the player.
  */
 function buildFumblePlan(rng: Rng, L: number, power: number, unitsPerMetre: number): FlightPlan {
-  const kind = rng.pick<FumbleKind>(['edge', 'fold', 'gust', 'nosedive']);
+  const kind = rng.pick<FumbleKind>(['fizzle', 'rim', 'gust', 'spinout']);
   const v0 = (0.45 + 0.55 * power) * 75;
   // speed: brief full-speed burst, then a hard brake while tumbling, then a skid to exactly L
   const T = Math.max(2.6, Math.min(4.5, 1.2 + L / 18));
@@ -275,8 +343,8 @@ function buildFumblePlan(rng: Rng, L: number, power: number, unitsPerMetre: numb
   }
   sArr[N - 1] = L; vArr[N - 1] = 0;
   // height: a short hop up, then a tumble to the ground
-  const peak = kind === 'nosedive' ? 1.5 : 3.5 + power * 2;
-  const h0 = LAUNCH_H + 1.8;
+  const peak = kind === 'fizzle' ? 1.2 : 3.5 + power * 2;
+  const h0 = LAUNCH_H + 3.6;
   for (let i = 0; i < N; i++) {
     const t = i * dt;
     let h: number;
@@ -287,7 +355,7 @@ function buildFumblePlan(rng: Rng, L: number, power: number, unitsPerMetre: numb
     } else h = 0.3;
     hArr[i] = Math.max(0.3, h);
   }
-  return { L, T, v0: v0 * k, events: [], dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre, fumble: kind };
+  return { L, T, v0: v0 * k, events: [], dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre, fumble: kind, ending: 'sprawl', tuckTime: 0.4 };
 }
 
 export function sampleAt(arr: Float32Array, dt: number, t: number): number {

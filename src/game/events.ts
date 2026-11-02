@@ -24,6 +24,8 @@ export interface EventObject {
 
 /** Kinds that can be scattered as harmless filler along the route. */
 export const DECOY_KINDS: PlanEvent['kind'][] = ['gulls', 'hotair', 'drone', 'blimp', 'raincloud', 'kite', 'crane', 'billboard', 'pigeons', 'burner', 'thermal', 'vent'];
+/** Street-level filler, placed on side streets away from the avenue. */
+export const STREET_DECOY_KINDS: PlanEvent['kind'][] = ['trampoline', 'castle', 'tyres', 'bigfan', 'cones', 'hotdog', 'mattress', 'dumpster'];
 /** Fliers that enter from the side before their moment (so they never pop in). */
 const FLY_IN = new Set<PlanEvent['kind']>(['gulls', 'drone']);
 
@@ -441,6 +443,159 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
           d.rotation.z += dt * 2;
           d.position.x += side * dt * 4;
         }
+      };
+      break;
+    }
+    // ───────────────────────── ground boosts ─────────────────────────
+    case 'trampoline': {
+      const px = e.x * 2;
+      const frame = mesh(TORUS, mk('#2b5fa8'), px, 1.2, 0, 5.2, 5.2, 1.2, -Math.PI / 2);
+      const mat = mesh(DISC, mk('#1e1e24'), px, 1.15, 0, 4.6, 4.6, 1, -Math.PI / 2);
+      group.add(frame, mat);
+      for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; group.add(mesh(CYL_LO, mk('#4b515b'), px + Math.cos(a) * 2.3, 0.6, Math.sin(a) * 2.3, 0.12, 1.2, 0.12)); }
+      update = (_dt) => {
+        if (self.triggered && self.age < 0.8) { const q = self.age / 0.8; mat.position.y = 1.15 - Math.sin(Math.PI * q) * 0.6; mat.scale.setScalar(4.6 * (1 + Math.sin(Math.PI * q) * 0.12)); }
+        if (self.triggered && self.age < 0.3 && Math.random() < 0.7) particles.emit({ pos: V(px, 1.3, z), vel: V(0, 3, 0), spread: 3, count: 3, life: 0.7, size: 0.35, endSize: 0.8, colors: ['#d9d3c4', '#c8c2b4'], drag: 1.5 });
+      };
+      break;
+    }
+    case 'castle': {
+      const px = e.x * 2;
+      const c = new THREE.Group();
+      c.add(mesh(BOX, mk('#f2c14e'), 0, 0.6, 0, 6, 1.2, 6));
+      c.add(mesh(BOX, mk('#e2574c'), 0, 2.2, 0, 5.2, 2.2, 5.2));
+      c.add(mesh(BOX, mk('#2b7bb9'), 0, 1.2, 2.7, 2, 2.4, 0.3));
+      for (const [dx, dz] of [[-2.6, -2.6], [2.6, -2.6], [-2.6, 2.6], [2.6, 2.6]]) {
+        c.add(mesh(CYL_LO, mk('#5fb8e6'), dx, 2.6, dz, 1.1, 3.2, 1.1));
+        c.add(mesh(CONE, mk('#e5679a'), dx, 4.6, dz, 1.3, 1.2, 1.3));
+      }
+      c.position.set(px, 0.02, 0);
+      group.add(c);
+      update = () => {
+        if (self.triggered && self.age < 0.9) { const q = self.age / 0.9; const sq = 1 - Math.sin(Math.PI * q) * 0.25; c.scale.set(1 / sq, sq, 1 / sq); }
+        else c.scale.setScalar(1);
+      };
+      break;
+    }
+    case 'tyres': {
+      const px = e.x * 2;
+      const stack = new THREE.Group();
+      for (let i = 0; i < 5; i++) stack.add(mesh(TORUS, mk('#2b2b2b'), (i % 2) * 0.1, 0.3 + i * 0.32, 0, 1.9, 1.9, 1.6, -Math.PI / 2));
+      stack.position.set(px, 0.02, 0);
+      group.add(stack);
+      update = () => {
+        if (self.triggered && self.age < 1.2) { stack.rotation.z = Math.sin(self.age * 14) * 0.15 * (1 - self.age / 1.2); stack.scale.y = 1 - Math.sin(Math.PI * Math.min(1, self.age / 0.5)) * 0.2; }
+      };
+      break;
+    }
+    case 'bigfan': {
+      const px = e.x * 2;
+      group.add(mesh(BOX, mk('#8a5a3c'), px, 0.8, 0, 3.6, 1.6, 3.6));
+      const ring = mesh(TORUS, mk('#4b515b'), px, 1.75, 0, 3.4, 3.4, 1.2, -Math.PI / 2);
+      const blades = new THREE.Group();
+      for (let i = 0; i < 4; i++) { const b = mesh(BOX, mk('#dfe6ee'), 0.7, 0, 0, 1.4, 0.06, 0.4); const p = new THREE.Group(); p.rotation.y = (i / 4) * Math.PI * 2; p.add(b); blades.add(p); }
+      blades.position.set(px, 1.75, 0);
+      group.add(ring, blades);
+      let spin = 4;
+      update = (dt) => {
+        const target = self.triggered && self.age < 3 ? 30 : 4;
+        spin += (target - spin) * Math.min(1, dt * 3);
+        blades.rotation.y += spin * dt;
+        if (Math.random() < (self.triggered && self.age < 2.5 ? 0.95 : dt * 4)) particles.emit({ pos: V(px + (Math.random() - 0.5) * 2, 2.2, z + (Math.random() - 0.5) * 2), vel: V(0, self.triggered ? 14 : 5, 0), spread: 1, count: 2, life: 0.9, size: 0.2, endSize: 0.03, colors: ['#ffffff', '#e6f3ff'], drag: 0.6 });
+      };
+      break;
+    }
+    // ───────────────────────── ground obstacles ─────────────────────────
+    case 'cones': {
+      const cones: { m: THREE.Mesh; vx: number; vy: number; vz: number; w: number }[] = [];
+      for (let i = 0; i < 7; i++) {
+        const m = mesh(CONE, mk('#ff7a1a'), -4.5 + i * 1.5, 0.55, 0, 0.7, 1.1, 0.7);
+        const band = mesh(CYL_LO, mk('#ffffff'), 0, 0.05, 0, 0.75, 0.14, 0.75); m.add(band);
+        const foot = mesh(BOX, mk('#2b2b2b'), -4.5 + i * 1.5, 0.05, 0, 0.9, 0.1, 0.9);
+        group.add(m, foot); cones.push({ m, vx: (i - 3) * 2.5, vy: 6 + Math.random() * 4, vz: -6 - Math.random() * 6, w: (Math.random() - 0.5) * 12 });
+      }
+      update = (dt) => {
+        if (!self.triggered) return;
+        for (const c of cones) {
+          c.vy -= 20 * dt;
+          c.m.position.x += c.vx * dt; c.m.position.y += c.vy * dt; c.m.position.z += c.vz * dt;
+          c.m.rotation.z += c.w * dt;
+          if (c.m.position.y < 0.3) { c.m.position.y = 0.3; c.vy = 0; c.vx *= 0.8; c.vz *= 0.8; c.w *= 0.8; }
+        }
+      };
+      break;
+    }
+    case 'hotdog': {
+      const px = e.x * 1.5;
+      const cart = new THREE.Group();
+      cart.add(mesh(BOX, mk('#f4f4f4'), 0, 1.0, 0, 2.8, 1.2, 1.6));
+      cart.add(mesh(BOX, mk('#d8392b'), 0, 1.65, 0, 2.9, 0.1, 1.7));
+      cart.add(mesh(CYL_LO, mk('#4b515b'), 0, 2.9, 0, 0.08, 2.5, 0.08));
+      const umb = mesh(CONE, mk('#f2c14e'), 0, 4.2, 0, 3.6, 0.9, 3.6);
+      cart.add(umb);
+      for (const dx of [-0.9, 0.9]) cart.add(mesh(CYL_LO, mk('#2b2b2b'), dx, 0.4, 0.9, 0.8, 0.2, 0.8, Math.PI / 2, 0, 0));
+      cart.add(mesh(BOX, mk('#ffffff'), 0, 1.0, -0.82, 1.8, 0.6, 0.05));
+      cart.position.set(px, 0.02, 0);
+      group.add(cart);
+      let vy = 0;
+      update = (dt) => {
+        if (!self.triggered) return;
+        if (self.age < 0.05) { vy = 9; particles.emit({ pos: V(px, 2, z), vel: V(0, 5, -2), spread: 6, count: 40, life: 1.6, size: 0.3, endSize: 0.25, colors: ['#e8b86d', '#c0392b', '#f2c14e', '#7bc96f'], drag: 1.2, gravity: 9, spin: 10 }); }
+        vy -= 18 * dt; umb.position.y += vy * dt; umb.position.x -= dt * 3; umb.rotation.z += dt * 2;
+        if (umb.position.y < -1) umb.visible = false;
+        cart.rotation.z = Math.sin(self.age * 9) * 0.12 * Math.max(0, 1 - self.age);
+      };
+      break;
+    }
+    case 'mattress': {
+      const px = e.x * 2;
+      const m = mesh(BOX, mk('#f4ede0'), px, 0.45, 0, 3.4, 0.9, 6);
+      for (let i = 0; i < 4; i++) group.add(mesh(BOX, mk('#5fb8e6'), px, 0.46, -2.2 + i * 1.5, 3.42, 0.9, 0.3));
+      group.add(m);
+      update = () => {
+        if (self.triggered && self.age < 0.8) { const q = Math.sin(Math.PI * self.age / 0.8); m.scale.set(1 + q * 0.2, 1 - q * 0.45, 1 + q * 0.1); }
+        else m.scale.setScalar(1);
+      };
+      break;
+    }
+    // ───────────────────────── endings ─────────────────────────
+    case 'dumpster': {
+      const bin = new THREE.Group();
+      bin.add(mesh(BOX, mk('#2e8b57'), 0, 1.1, 0, 3.6, 2.0, 2.4));
+      for (const dx of [-1.4, 1.4]) for (const dz of [-0.9, 0.9]) bin.add(mesh(CYL_LO, mk('#2b2b2b'), dx, 0.2, dz, 0.4, 0.2, 0.4, Math.PI / 2, 0, 0));
+      bin.add(mesh(BOX, mk('#ffffff'), 0, 1.2, -1.22, 1.6, 0.6, 0.04));
+      const lid = new THREE.Group();
+      lid.add(mesh(BOX, mk('#246b45'), 0, 0.1, 1.2, 3.7, 0.2, 2.5));
+      lid.position.set(0, 2.1, -1.25);
+      lid.rotation.x = -1.9; // open, leaning back
+      bin.add(lid);
+      // a bit of trash poking out
+      bin.add(mesh(SPHERE_LO, mk('#2b2b2b'), -0.8, 2.2, 0.2, 0.9, 0.7, 0.9));
+      bin.add(mesh(BOX, mk('#e8d5a8'), 0.7, 2.2, -0.2, 0.8, 0.6, 0.5));
+      group.add(bin);
+      update = (dt) => {
+        if (!self.triggered) return;
+        if (self.age < 0.08) particles.emit({ pos: V(0, 2.4, z), vel: V(0, 7, 0), spread: 5, count: 60, life: 1.5, size: 0.35, endSize: 0.3, colors: ['#2b2b2b', '#e8d5a8', '#9fd8ff', '#c0392b', '#7bc96f', '#ffffff'], drag: 1.2, gravity: 9, spin: 12 });
+        // lid slams shut, then pops back open for the reveal
+        const target = self.age < 1.4 ? 0 : -1.9;
+        lid.rotation.x += (target - lid.rotation.x) * Math.min(1, dt * (self.age < 1.4 ? 14 : 5));
+        if (self.age < 0.6) bin.scale.y = 1 - Math.sin(Math.PI * self.age / 0.6) * 0.12;
+      };
+      break;
+    }
+    case 'hay': {
+      const truck = new THREE.Group();
+      truck.add(mesh(BOX, mk('#8a5a3c'), 0, 0.9, 0, 3.2, 0.3, 7));
+      truck.add(mesh(BOX, mk('#d8392b'), 0, 1.6, 4.2, 3, 1.8, 2.2));
+      truck.add(mesh(BOX, mk('#bfe9ff'), 0, 1.9, 3.1, 2.6, 0.9, 0.1));
+      for (const dz of [-2.4, 2.4]) for (const dx of [-1.5, 1.5]) truck.add(mesh(CYL_LO, mk('#2b2b2b'), dx, 0.5, dz, 1, 0.4, 1, 0, 0, Math.PI / 2));
+      const hayMat = mk('#e2c56b');
+      for (const [dx, dy, dz, sc] of [[0, 2.2, -0.5, 3.4], [1.1, 1.9, 0.8, 2.6], [-1.1, 1.9, -1.6, 2.6], [0, 2.9, -1.2, 2.4], [0.6, 1.8, -2.4, 2.2]]) truck.add(mesh(SPHERE_LO, hayMat, dx, dy, dz, sc, sc * 0.8, sc));
+      truck.position.set(0, 0.02, 1.5);
+      group.add(truck);
+      update = () => {
+        if (!self.triggered) return;
+        if (self.age < 0.08) particles.emit({ pos: V(0, 3, z), vel: V(0, 6, 0), spread: 5, count: 70, life: 1.8, size: 0.25, endSize: 0.2, colors: ['#e2c56b', '#d4b45a', '#f0dc8c'], drag: 1.0, gravity: 6, spin: 14 });
       };
       break;
     }

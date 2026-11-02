@@ -1,9 +1,9 @@
 {
-  "name": "paper-planes",
+  "name": "soarin-steve",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Paper Planes - a whimsical launch-and-watch betting game (PWA)",
+  "description": "Soarin' Steve - a whimsical human-cannonball betting game (PWA)",
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",

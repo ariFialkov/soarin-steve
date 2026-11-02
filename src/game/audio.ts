@@ -103,6 +103,21 @@ export const audio = {
     };
   },
 
+  /** Cannon shot: deep thump plus a noise burst. */
+  boom() {
+    const c = ac(); if (!c || !master) return;
+    const o = c.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(140, c.currentTime);
+    o.frequency.exponentialRampToValueAtTime(35, c.currentTime + 0.5);
+    const g = c.createGain();
+    g.gain.setValueAtTime(1.0, c.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.6);
+    o.connect(g).connect(master);
+    o.start(); o.stop(c.currentTime + 0.65);
+    this.whoosh(0.9, 1.0, 0.6);
+  },
+
   bonk() {
     const c = ac(); if (!c || !master) return;
     const o = c.createOscillator();
