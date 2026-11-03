@@ -92,6 +92,21 @@ near the path, cheap massing beyond, each tile baked into three merged meshes. T
 streets, birds, balloons, blimps, airliners and helicopters cross the sky, and harmless filler
 obstacles sit around the city so a crane or a flock is not a tell.
 
+## The stuntmen
+
+Each stake has its own stuntman, built from the same rig with his own proportions and features
+(`PHYSIQUES` in `src/game/steve.ts`):
+
+| Stake | Stuntman | Build |
+|---|---|---|
+| Rookie ($1) | Soarin' Steve | the original |
+| Pro ($5) | Cannonball Chris | short and round, handlebar moustache |
+| Daredevil ($20) | Projectile Pete | tall and tubular, nose-cone helmet |
+| Legend ($100) | Heatseeker Hank | buff, square-jawed, rocket shoes that fire in flight |
+
+His shadow is a planar projection of his body onto the ground along the sun, drawn as one merged
+mesh with a stencil so limbs never double-darken (one extra draw, no change to the city shaders).
+
 ## Steve and his wardrobe
 
 Steve is a jointed figure built from primitives (`src/game/steve.ts`) with a library of poses
@@ -105,10 +120,15 @@ human-sized (about 1.65 units, next to 3.8-unit cars) and a grounding step keeps
 of the road while he tumbles, lies stunned, sits up and stands. After touchdown he lies stunned with stars circling, sits up, stands
 gingerly, brushes off both shoulders, shakes it off and strikes the pose before the result card.
 
-58 stunt suits across four tiers (Rookie $1, Pro $5, Daredevil $20, Legend $100) set his colours,
-emblem and cape and give him one of seven flight personalities (steady, swoop, rockabye, twirl,
-flutter, dart, drift). A 1.00× flight crosses roughly 420 m of city on Rookie up to 1.2 km on
-Legend; longer flights are compressed logarithmically so even a 500× result fits in one sitting.
+58 stunt suits across four tiers (Rookie $1, Pro $5, Daredevil $20, Legend $100) set the
+stuntman's colours, emblem and cape and give him one of seven flight personalities (steady, swoop,
+rockabye, twirl, flutter, dart, drift). A 1.00× flight crosses roughly 630 m of city on Rookie up
+to 1.8 km on Legend; longer flights are compressed logarithmically so even a 500× result fits in
+one sitting.
+
+The payout tables are built so their raw expectation is already near the RTP, so rescaling does
+not crush losses: big losses (under 0.3×) are 2 to 12% of rounds depending on stake, the median
+round returns about 0.6 to 0.75×, and misfires are a rare Legend-only surprise. A test guards it.
 Each tier has a free default suit; the rest are bought from the wallet.
 
 ## Controls

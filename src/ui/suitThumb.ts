@@ -17,10 +17,16 @@ export function suitThumbSvg(s: SuitDef, size = 120): string {
       default: return '';
     }
   })();
-  const cape = s.cape ? `<path d="M44 44 Q36 70 40 96 L80 96 Q84 70 76 44 Z" fill="${s.accent}" opacity="0.9"/>` : '';
+  const cape = `<path d="M44 44 Q36 70 40 96 L80 96 Q84 70 76 44 Z" fill="${s.cape ? s.accent : s.secondary}" opacity="0.9"/>`;
+  // each stake's stuntman has his own build
+  const build = s.tier === 'medium' ? 'scale(1.32 0.86) translate(-14.5 13)' : s.tier === 'hard' ? 'scale(0.82 1.1) translate(13.2 -9)' : s.tier === 'expert' ? 'scale(1.15 1.02) translate(-7.8 -1.5)' : '';
+  const extra = s.tier === 'medium'
+    ? `<ellipse cx="60" cy="62" rx="19" ry="15" fill="${s.primary}"/><path d="M50 33 q5 4 10 0 q5 4 10 0" stroke="#4a2f1d" stroke-width="2.4" fill="none"/>`
+    : s.tier === 'hard' ? `<polygon points="47,16 60,2 73,16" fill="${s.accent}"/>`
+    : s.tier === 'expert' ? `<rect x="44" y="100" width="8" height="6" rx="2" fill="#9aa1ab"/><rect x="68" y="100" width="8" height="6" rx="2" fill="#9aa1ab"/><polygon points="46,106 50,106 48,113" fill="#ffb347"/><polygon points="70,106 74,106 72,113" fill="#ffb347"/><ellipse cx="60" cy="47" rx="19" ry="8" fill="${s.primary}"/>` : '';
   return `<svg viewBox="0 0 120 120" width="${S}" height="${S}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <defs><filter id="${id}" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#4a3f30" flood-opacity="0.25"/></filter></defs>
-    <g filter="url(#${id})">
+    <g filter="url(#${id})" transform="${build}">
       ${cape}
       <!-- legs -->
       <rect x="47" y="76" width="11" height="24" rx="4" fill="${s.primary}"/><rect x="62" y="76" width="11" height="24" rx="4" fill="${s.primary}"/>
@@ -39,5 +45,6 @@ export function suitThumbSvg(s: SuitDef, size = 120): string {
       <path d="M46 25 A14 14 0 0 1 74 25 L74 28 L46 28 Z" fill="${s.accent}"/>
       <rect x="49" y="25" width="22" height="6" rx="3" fill="#2b2b2b"/><rect x="51" y="26.5" width="7" height="3" rx="1.5" fill="#9fd8ff"/><rect x="62" y="26.5" width="7" height="3" rx="1.5" fill="#9fd8ff"/>
       <rect x="56" y="34" width="8" height="1.6" rx="0.8" fill="#2b2b2b"/>
+      ${extra}
     </g></svg>`;
 }

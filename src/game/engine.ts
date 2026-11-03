@@ -12,7 +12,7 @@ import { suitById, type SuitDef } from '../data/suits';
 import { audio } from './audio';
 import { buildFlightPlan, sampleAt, type FlightPlan, type FumbleKind } from './flightPlan';
 import { ParticleSystem } from './particles';
-import { buildSteve, type SteveRig } from './steve';
+import { buildSteve, PHYSIQUES, type SteveRig } from './steve';
 import { buildCannon, type Cannon } from './cannon';
 import { World } from './world';
 import { LAUNCH_H } from './constants';
@@ -46,6 +46,7 @@ interface Impulse { strength: number; remaining: number; duration: number }
 const PRONE = -Math.PI / 2;
 /** Steve is about 1.65 units tall (a car is 3.8 long); the cannon is sized to fit him. */
 const STEVE_SCALE = 0.8;
+const SUN_DIR = new THREE.Vector3(-0.12, 0.88, 0.4).normalize();
 const CANNON_SCALE = 0.95;
 const UPDATE_MARK = 0;
 
@@ -127,7 +128,7 @@ export class Engine {
   constructor(canvas: HTMLCanvasElement, events: EngineEvents) {
     this.events = events;
     const high = profile.quality === 'high';
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: high, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: high, powerPreference: 'high-performance', logarithmicDepthBuffer: true, stencil: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, high ? 2 : 1.25));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -139,7 +140,9 @@ export class Engine {
 
     const hemi = new THREE.HemisphereLight('#e8f6ff', '#9a9a8a', 1.05);
     const sun = new THREE.DirectionalLight('#fff4d6', 1.7);
-    sun.position.set(-30, 50, -25);
+    // the sun sits high behind the camera, so the stuntman's shadow falls ahead of him on the city
+    sun.position.copy(SUN_DIR).multiplyScalar(60);
+
     const fill = new THREE.DirectionalLight('#e8f0ff', 0.55);
     fill.position.set(10, -30, 20);
     this.scene.add(hemi, sun, fill);
@@ -150,6 +153,7 @@ export class Engine {
     this.blob = new THREE.Mesh(new THREE.CircleGeometry(0.6, 20), new THREE.MeshBasicMaterial({ color: 0x1b2a10, transparent: true, opacity: 0.14, depthWrite: false }));
     this.blob.rotation.x = -Math.PI / 2;
     this.scene.add(this.blob);
+    this.blob.visible = false;
 
     this.cannon = buildCannon();
     this.cannon.group.position.y = LAUNCH_H;
@@ -212,9 +216,100 @@ export class Engine {
   setSuit(def: SuitDef): void {
     if (this.steve) { this.scene.remove(this.steve.group); this.steve.dispose(); }
     this.suit = def;
-    this.steve = buildSteve(def, STEVE_SCALE);
+    this.steve = buildSteve(def, STEVE_SCALE, PHYSIQUES[def.tier]);
+    this.buildShadowProxy();
     this.scene.add(this.steve.group);
     this.placeOnRoof();
+  }
+
+  // ---------------------------------------------------------------- planar shadow
+  /**
+   * The stuntman's shadow: a flattened copy of every part of him projected onto the ground along the
+   * sun's direction. A stencil makes overlapping limbs darken only once. It costs a few dozen tiny
+   * draws and leaves the city's shaders untouched, so the frame rate does not move.
+   */
+  private shadowParts: { src: THREE.Mesh; offset: number; count: number }[] = [];
+  private shadowGroup = new THREE.Group();
+  private shadowMesh: THREE.Mesh | null = null;
+  private shadowMat = new THREE.MeshBasicMaterial({
+    color: 0x10180c, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    stencilWrite: true, stencilRef: 0, stencilFunc: THREE.EqualStencilFunc, stencilZPass: THREE.IncrementStencilOp,
+  });
+  private shadowMatrix = new THREE.Matrix4();
+  private shadowTmp = new THREE.Matrix4();
+  private shadowV = new THREE.Vector3();
+
+  /** One merged mesh holding every part of him; its vertices are re-projected each frame (a single draw). */
+  private buildShadowProxy(): void {
+    if (this.shadowMesh) { this.shadowGroup.remove(this.shadowMesh); this.shadowMesh.geometry.dispose(); }
+    if (!this.shadowGroup.parent) this.scene.add(this.shadowGroup);
+    this.shadowParts = [];
+    const index: number[] = [];
+    let total = 0;
+    this.steve!.group.traverse(o => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const pos = m.geometry.attributes.position;
+      const idx = m.geometry.index;
+      if (idx) for (let i = 0; i < idx.count; i++) index.push(idx.getX(i) + total);
+      else for (let i = 0; i < pos.count; i++) index.push(i + total);
+      this.shadowParts.push({ src: m, offset: total, count: pos.count });
+      total += pos.count;
+    });
+    const geo = new THREE.BufferGeometry();
+    const attr = new THREE.BufferAttribute(new Float32Array(total * 3), 3);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('position', attr);
+    geo.setIndex(index);
+    this.shadowMesh = new THREE.Mesh(geo, this.shadowMat);
+    this.shadowMesh.frustumCulled = false;
+    this.shadowMesh.matrixAutoUpdate = false;
+    this.shadowMesh.renderOrder = 5;
+    this.shadowGroup.add(this.shadowMesh);
+  }
+
+  private updateShadow(p: THREE.Vector3): void {
+    if (!this.steve || !this.world || !this.shadowMesh) return;
+    // where his centre lands along the sun ray, and the ground height there
+    const L = SUN_DIR;
+    let gy = this.world.terrain.at(p.x, p.z);
+    const onRoof = Math.hypot(p.x, p.z) < 32 && p.z > -6;
+    for (let i = 0; i < 2; i++) {
+      const k = (p.y - gy) / L.y;
+      gy = onRoof ? LAUNCH_H : this.world.terrain.at(p.x - L.x * k, p.z - L.z * k);
+    }
+    const planeY = gy + 0.24;
+    // projection onto y = planeY along L, normalised so w stays 1 (the log depth buffer needs a true w)
+    const d = -planeY, ix = L.x / L.y, iz = L.z / L.y;
+    this.shadowMatrix.set(
+      1, -ix, 0, -ix * d,
+      0, 0, 0, -d,
+      0, -iz, 1, -iz * d,
+      0, 0, 0, 1,
+    );
+    const alt = Math.max(0, p.y - gy);
+    this.shadowMat.opacity = 0.3 * Math.max(0.25, 1 - alt / 140);
+    this.steve.group.updateMatrixWorld(true);
+    const out = this.shadowMesh.geometry.attributes.position as THREE.BufferAttribute;
+    const arr = out.array as Float32Array;
+    const v = this.shadowV;
+    for (const part of this.shadowParts) {
+      let vis = part.src.visible && this.steve.group.visible;
+      for (let a = part.src.parent; vis && a; a = a.parent) vis = a.visible;
+      const src = part.src.geometry.attributes.position;
+      if (!vis) { arr.fill(0, part.offset * 3, (part.offset + part.count) * 3); continue; }   // collapsed: draws nothing
+      this.shadowTmp.multiplyMatrices(this.shadowMatrix, part.src.matrixWorld);
+      const e = this.shadowTmp.elements;
+      for (let i = 0; i < part.count; i++) {
+        v.fromBufferAttribute(src, i);
+        const o = (part.offset + i) * 3;
+        arr[o] = e[0] * v.x + e[4] * v.y + e[8] * v.z + e[12];
+        arr[o + 1] = e[1] * v.x + e[5] * v.y + e[9] * v.z + e[13];
+        arr[o + 2] = e[2] * v.x + e[6] * v.y + e[10] * v.z + e[14];
+      }
+    }
+    out.needsUpdate = true;
   }
 
   /** Called by the UI when the tier/suit selection changes. */
@@ -246,7 +341,7 @@ export class Engine {
     s.body.position.set(0, 0, 0);
     s.body.rotation.set(0, 0, 0);
     s.root.rotation.set(0, 0, 0);
-    s.root.position.set(0, 0.95, 0);
+    s.root.position.set(0, s.stand, 0);
     s.snapPose('hero');
     this.spin = 0; this.spinRate = 0;
   }
@@ -258,7 +353,7 @@ export class Engine {
     this.cannon.muzzle(this.tmpV, this.tmpV2);
     const dir = this.tmpV2;
     // the tuck is centred on the pelvis; the head sits about 1.2 units up the body axis
-    s.group.position.copy(this.tmpV).addScaledVector(dir, -0.78);
+    s.group.position.copy(this.tmpV).addScaledVector(dir, -s.tuckReach * STEVE_SCALE);
     s.group.rotation.set(0, 0, 0);
     s.body.position.set(0, 0, 0);
     s.body.rotation.set(0, 0, 0);
@@ -525,6 +620,7 @@ export class Engine {
       const onRoof = Math.hypot(p.x, p.z) < 32 && p.z > -6;
       const ground = onRoof ? LAUNCH_H : (this.world ? this.world.terrain.at(p.x, p.z) : 0);
       this.blob.position.set(p.x, ground + 0.08, p.z);
+      this.updateShadow(p);
       const rel = p.y - ground;
       const sc = Math.max(0.5, 1.4 - rel * 0.02);
       this.blob.scale.set(sc * 1.1, sc, 1);
@@ -749,6 +845,14 @@ export class Engine {
       }
     }
     this.rocketsLit = this.rocketsLit.filter(rk => rk.age < 1.6);
+    // Heatseeker Hank's rocket shoes: a steady exhaust while he is airborne and not tumbling
+    if (steve.shoeNozzles.length && !grounded && !plan.fumble && !launching) {
+      for (const nz of steve.shoeNozzles) {
+        nz.getWorldPosition(this.tmpV);
+        nz.getWorldDirection(this.tmpV2).multiplyScalar(4);
+        this.particles.emit({ pos: this.tmpV, vel: this.tmpV2, spread: 0.5, count: 2, life: 0.32, size: 0.07, endSize: 0.01, colors: ['#ffb347', '#ffd27f', '#ff7a1a', '#ffffff'], drag: 3 });
+      }
+    }
 
     // ---- camera: on the line behind Steve, looking straight down it; height on a smooth spring
     const vNorm = Math.min(1, v / 60);
@@ -861,8 +965,8 @@ export class Engine {
         steve.setPose('gingerly', 4);
         const k = Math.min(1, (T - 2.1) / 0.8);
         steve.root.rotation.set(0, 0, 0);
-        steve.root.position.set(0, 0.55 + 0.4 * (k * k * (3 - 2 * k)), 0);
-      } else if (T < 3.5) { steve.setPose('brushL', 7); steve.root.position.set(0, 0.95, 0); }
+        steve.root.position.set(0, 0.55 + (steve.stand - 0.55) * (k * k * (3 - 2 * k)), 0);
+      } else if (T < 3.5) { steve.setPose('brushL', 7); steve.root.position.set(0, steve.stand, 0); }
       else if (T < 4.1) { steve.setPose('brushR', 7); }
       else if (T < 4.5) { steve.setPose('gingerly', 8); steve.root.rotation.set(0, Math.sin((T - 4.1) * 25) * 0.25, 0); }
       else { steve.setPose('hero', 6); steve.root.rotation.set(0, 0, 0); }
@@ -878,7 +982,7 @@ export class Engine {
         steve.root.rotation.set(0, 0, 0);
         const k = Math.min(1, (T - 1.4) / 0.4);
         g.position.y = 0.3 + 0.9 * k;            // waist at the rim
-        steve.root.position.set(0, 0.95, 0);
+        steve.root.position.set(0, steve.stand, 0);
         this.spin = 0;
         if (T > 2.4) steve.setPose('hero', 6);
       }
@@ -894,7 +998,7 @@ export class Engine {
         steve.setPose(T < 2.4 ? 'triumph' : 'hero', 6);
         steve.root.rotation.set(0, 0, 0);
         const k = Math.min(1, (T - 1.5) / 0.4);
-        steve.root.position.set(0, 0.95, 0);
+        steve.root.position.set(0, steve.stand, 0);
         g.position.y = 2.6 + 1.2 * k;
         this.spin = 0;
       }

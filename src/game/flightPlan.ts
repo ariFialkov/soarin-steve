@@ -106,13 +106,13 @@ const NEAR_OK = new Set<EventKind>(['gulls', 'drone', 'propplane', 'jetwash', 'f
 /** Static structures must sit deep in the haze at launch time (world units from the launcher). */
 const STATIC_MIN_S = 230;
 /** Results shorter than this become a "bad release" fumble with no obstacles at all. */
-export const FUMBLE_L = 110;
+export const FUMBLE_L = 150;
 
 /** Compress very long distances so the world stays a sensible size. */
 export function worldLength(distanceMetres: number): number {
   const D = distanceMetres;
-  if (D <= 1400) return D;
-  return 1400 + 420 * Math.log(D / 1400);
+  if (D <= 2100) return D;
+  return 2100 + 630 * Math.log(D / 2100);
 }
 
 export function buildFlightPlan(opts: {
@@ -147,7 +147,7 @@ export function buildFlightPlan(opts: {
   let decel = SURFACES.asphalt.decel;
   let surface: Surface = 'asphalt';
   let vLand = 0, dSkid = 0, L_air = L, T = 1;
-  const tMin = 4, tMax = 46;
+  const tMin = 5, tMax = 60;
   const settle = () => {
     const at = (d: number) => {
       let vl = ending === 'sprawl' ? vEndFrac * v0 : 0;

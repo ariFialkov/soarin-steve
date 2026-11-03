@@ -115,7 +115,8 @@ export class UI {
     $('r-payout').textContent = money(r.payout);
     const stamp = $('result-stamp');
     const m = r.multiplier;
-    stamp.textContent = this.lastFumble ? 'Misfire!' : m >= 10 ? 'LEGENDARY!' : m >= 3 ? 'What a stunt!' : m >= 1 ? 'Nice flight, Steve!' : m >= 0.5 ? 'He will walk it off' : 'Ouch. Short hop';
+    const who = TIER_CONFIG[r.tier].character.split(' ').pop();
+    stamp.textContent = this.lastFumble ? 'Misfire!' : m >= 10 ? 'LEGENDARY!' : m >= 3 ? 'What a stunt!' : m >= 1 ? `Nice flight, ${who}!` : m >= 0.5 ? `${who} will walk it off` : 'Ouch. Short hop';
     this.lastFumble = null;
     stamp.classList.toggle('big', m >= 1);
     $('r-fair').innerHTML = `
@@ -166,7 +167,7 @@ export class UI {
     const cfg = TIER_CONFIG[profile.tier];
     const cost = server.boostCost(profile.tier, profile.boosts);
     $('hud-wager').textContent = money(cfg.stake + cost);
-    $('hud-plane').textContent = suitById(profile.selected[profile.tier]).name;
+    $('hud-plane').textContent = `${cfg.character} · ${suitById(profile.selected[profile.tier]).name}`;
   }
 
   private refreshBoostBar(): void {
@@ -189,8 +190,8 @@ export class UI {
     const m = this.engine.boostMode;
     const touch = matchMedia('(pointer: coarse)').matches;
     $('boost-hint').textContent =
-      m === 'blower' ? (touch ? 'hold your thumb behind Steve to blow him along' : 'click and hold behind Steve to blow him along') :
-      m === 'confetti' ? (touch ? 'tap behind Steve to fire' : 'click behind Steve to fire') :
+      m === 'blower' ? (touch ? 'hold your thumb behind him to blow him along' : 'click and hold behind him to blow him along') :
+      m === 'confetti' ? (touch ? 'tap behind him to fire' : 'click behind him to fire') :
       m === 'rockets' ? (touch ? 'tap anywhere to light the next rocket' : 'click anywhere to light the next rocket') : '';
   }
 
@@ -203,7 +204,7 @@ export class UI {
       const b = document.createElement('button');
       b.className = 'tier-btn' + (profile.tier === t ? ' active' : '');
       b.style.setProperty('--c', cfg.accent);
-      b.innerHTML = `<span class="dot"></span><span>${cfg.label}</span><span class="stake">${money(cfg.stake)}</span>`;
+      b.innerHTML = `<span class="dot"></span><span class="tier-names"><span>${cfg.label}</span><small>${cfg.character}</small></span><span class="stake">${money(cfg.stake)}</span>`;
       b.addEventListener('click', () => { this.setTier(t); audio.tick(); });
       el.appendChild(b);
     }
@@ -243,10 +244,10 @@ export class UI {
   private closePanel(): void { this.panel.classList.add('hidden'); }
 
   private openHangar(tier: Tier = profile.tier): void {
-    const tabs = TIERS.map(t => `<button class="${t === tier ? 'active' : ''}" data-tier="${t}" style="--c:${TIER_CONFIG[t].accent}">${TIER_CONFIG[t].label} · ${money(TIER_CONFIG[t].stake)}</button>`).join('');
+    const tabs = TIERS.map(t => `<button class="${t === tier ? 'active' : ''}" data-tier="${t}" style="--c:${TIER_CONFIG[t].accent}">${TIER_CONFIG[t].character} · ${money(TIER_CONFIG[t].stake)}</button>`).join('');
     this.openPanel(`
       <h2>Wardrobe</h2>
-      <p class="muted">Your stake is set by the suit's tier. The flashier the suit, the bigger the show on a good day.</p>
+      <p class="muted">Each stake has its own stuntman: ${TIERS.map(t => `<b>${TIER_CONFIG[t].character}</b> (${TIER_CONFIG[t].label})`).join(', ')}. Pick his suit below.</p>
       <div class="tabs">${tabs}</div>
       <div class="grid" id="hangar-grid"></div>
       <p class="muted" style="margin-top:12px">Each suit gives Steve a different flying style: steady, swooping, rocking, twirling, fluttering, darting or drifting.</p>`);
@@ -277,7 +278,7 @@ export class UI {
         profile.selected[p.tier] = p.id;
         this.setTier(p.tier);
         this.renderHangarGrid(p.tier);
-        this.toast(`Steve is wearing ${p.name}`);
+        this.toast(`${TIER_CONFIG[p.tier].character} is wearing ${p.name}`);
       } else {
         if (card.querySelector('.confirm')) return;
         const c = document.createElement('div');
@@ -319,10 +320,10 @@ export class UI {
     }).join('');
     this.openPanel(`
       <h2>Boosts</h2>
-      <p class="muted">Carry boosts into Steve's next flight and use them whenever you like. Their cost joins your ${money(cfg.stake)} stake as part of the wager when you fire, and unused boosts are not refunded.</p>
+      <p class="muted">Carry boosts into ${cfg.character}'s next flight and use them whenever you like. Their cost joins your ${money(cfg.stake)} stake as part of the wager when you fire, and unused boosts are not refunded.</p>
       ${rows}
       <div class="total"><span>Wager next round</span><span id="shop-total"></span></div>
-      <div class="muted" style="margin-top:4px">Boosts only push a Steve who is already moving: once he is down, he is down.</div>`);
+      <div class="muted" style="margin-top:4px">Boosts only push a stuntman who is already moving: once he is down, he is down.</div>`);
     const refresh = () => {
       for (const row of Array.from(this.panelBody.querySelectorAll<HTMLElement>('.shop-row'))) {
         const k = row.dataset.kind as BoostKind;

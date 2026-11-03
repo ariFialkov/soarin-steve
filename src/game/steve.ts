@@ -40,6 +40,33 @@ export const POSES: Record<string, Pose> = {
   triumph: { torso: [-0.1, 0, 0], head: [0.25, 0, 0], lShoulder: [2.6, 0, -0.5], rShoulder: [2.6, 0, 0.5], lElbow: [0.3, 0, 0], rElbow: [0.3, 0, 0], lHip: [0, 0, -0.1], rHip: [0, 0, 0.1], lKnee: [0, 0, 0], rKnee: [0, 0, 0] },
 };
 
+/** Body proportions and signature features of each stuntman (multipliers on Steve's build). */
+export interface Physique {
+  leg: number; legT: number;        // leg length / thickness
+  arm: number; armT: number;
+  torsoLen: number; torsoW: number; torsoD: number;
+  shoulderW: number;
+  head: number; headLong: number;
+  belly: number;                    // 0..1 round belly
+  pecs: number;                     // 0..1 heroic chest
+  style: 'steve' | 'chris' | 'pete' | 'hank';
+  rocketShoes: boolean;
+}
+
+export const PHYSIQUES: Record<'easy' | 'medium' | 'hard' | 'expert', Physique> = {
+  // Soarin' Steve: the original
+  easy:   { leg: 1, legT: 1, arm: 1, armT: 1, torsoLen: 1, torsoW: 1, torsoD: 1, shoulderW: 1, head: 1, headLong: 1, belly: 0, pecs: 0, style: 'steve', rocketShoes: false },
+  // Cannonball Chris: short, round, squat
+  medium: { leg: 0.7, legT: 1.35, arm: 0.82, armT: 1.3, torsoLen: 0.84, torsoW: 1.4, torsoD: 1.45, shoulderW: 1.2, head: 1.12, headLong: 0.95, belly: 1, pecs: 0, style: 'chris', rocketShoes: false },
+  // Projectile Pete: tall, slender, tube-shaped
+  hard:   { leg: 1.22, legT: 0.8, arm: 1.15, armT: 0.8, torsoLen: 1.2, torsoW: 0.82, torsoD: 0.85, shoulderW: 0.85, head: 0.95, headLong: 1.15, belly: 0, pecs: 0, style: 'pete', rocketShoes: false },
+  // Heatseeker Hank: buff, square-jawed, rocket shoes
+  expert: { leg: 1.08, legT: 1.2, arm: 1.06, armT: 1.4, torsoLen: 1.08, torsoW: 1.22, torsoD: 1.1, shoulderW: 1.35, head: 1.0, headLong: 1.04, belly: 0, pecs: 1, style: 'hank', rocketShoes: true },
+};
+
+/** Pelvis height above the soles when standing straight. */
+export function standHeight(p: Physique): number { return 0.05 + 0.86 * p.leg + 0.06; }
+
 export interface SteveRig {
   group: THREE.Group;      // world placement (flight position)
   body: THREE.Group;       // sway offsets
@@ -49,6 +76,13 @@ export interface SteveRig {
   cape: THREE.Mesh | null;
   pack: THREE.Mesh;
   height: number;
+  physique: Physique;
+  /** pelvis height above the soles when standing */
+  stand: number;
+  /** how far the head sits from the pelvis in the cannonball tuck (for seating in the barrel) */
+  tuckReach: number;
+  /** rocket-shoe nozzles (Hank), empty otherwise */
+  shoeNozzles: THREE.Object3D[];
   /** Secondary motion input: world velocity of the figure (for the cape and limb lag). */
   velocity: THREE.Vector3;
   /** blend towards a pose; speed in radians per second */
@@ -81,7 +115,9 @@ class ClothCape {
   /** max allowed distance of each particle from each pin (long-range attachments: the cape cannot stretch) */
   private reach: number[][] = [];
 
-  constructor(private torso: THREE.Object3D, private group: THREE.Object3D, material: THREE.Material, scale: number) {
+  private depth = 1;
+  constructor(private torso: THREE.Object3D, private group: THREE.Object3D, material: THREE.Material, scale: number, ph: Physique) {
+    this.depth = ph.torsoD;
     const geo = new THREE.PlaneGeometry(1, 1, this.W - 1, this.H - 1);
     this.mesh = new THREE.Mesh(geo, material);
     this.mesh.frustumCulled = false;
@@ -92,9 +128,10 @@ class ClothCape {
     for (let j = 0; j < this.H; j++) for (let i = 0; i < this.W; i++) {
       const v = j / (this.H - 1);
       const u = i / (this.W - 1) - 0.5;
-      const half = 0.24 + 0.32 * v;
+      const half = (0.24 + 0.32 * v) * ph.shoulderW;
       const flute = Math.cos(u * Math.PI * 6) * 0.035 * v;
-      this.pinsLocal.push(new THREE.Vector3(u * 2 * half, 0.64 - v * 1.3, 0.26 + v * 0.1 + flute));
+      const len = 0.75 * ph.torsoLen + 0.55 * ph.leg;
+      this.pinsLocal.push(new THREE.Vector3(u * 2 * half, 0.64 * ph.torsoLen - v * len, 0.26 * ph.torsoD + v * 0.1 + flute));
       this.pinned.push(j === 0 && (i === 0 || i === this.W - 1));
     }
     const idx = (i: number, j: number) => j * this.W + i;
@@ -116,14 +153,15 @@ class ClothCape {
 
   /** Minimum distance behind the spine (torso space) at height y and width x: clears chest, shoulders, pack and seat. */
   private clearance(x: number, y: number): number {
+    const D = this.depth;
     let z: number;
-    if (y > 0.5) z = 0.24;                       // shoulder blades
-    else if (y > -0.12) z = 0.25;                 // back
-    else z = 0.2;                                 // seat and legs
-    if (this.packOn && y > 0.1 && y < 0.62) z = 0.36;   // over the rocket backpack
+    if (y > 0.5) z = 0.24 * D;                    // shoulder blades
+    else if (y > -0.12) z = 0.25 * D;             // back
+    else z = 0.2 * D;                             // seat and legs
+    if (this.packOn && y > 0.1 && y < 0.62) z = 0.36 * D;   // over the rocket backpack
     // let it wrap a little around the sides
     const ax = Math.abs(x);
-    if (ax > 0.28) z -= Math.min(z, (ax - 0.28) * 1.6);
+    if (ax > 0.28 * D) z -= Math.min(z, (ax - 0.28 * D) * 1.6);
     return z;
   }
 
@@ -217,7 +255,7 @@ class ClothCape {
         const o = k * 3;
         this.tmp.set(this.pos[o], this.pos[o + 1], this.pos[o + 2]).applyMatrix4(this.inv);
         const zmin = this.clearance(this.tmp.x, this.tmp.y);
-        if (this.tmp.z < zmin && Math.abs(this.tmp.x) < 0.5) {
+        if (this.tmp.z < zmin && Math.abs(this.tmp.x) < 0.5 * this.depth) {
           this.tmp.z = zmin;
           this.tmp2.copy(this.tmp).applyMatrix4(m);
           this.pos[o] = this.tmp2.x; this.pos[o + 1] = this.tmp2.y; this.pos[o + 2] = this.tmp2.z;
@@ -241,7 +279,7 @@ function capsule(r: number, len: number, mat: THREE.Material): THREE.Mesh {
   return new THREE.Mesh(g, mat);
 }
 
-export function buildSteve(suit: SuitDef, scale = 1): SteveRig {
+export function buildSteve(suit: SuitDef, scale = 1, ph: Physique = PHYSIQUES.easy): SteveRig {
   const mats = {
     primary: new THREE.MeshLambertMaterial({ color: suit.primary }),
     secondary: new THREE.MeshLambertMaterial({ color: suit.secondary }),
@@ -253,6 +291,10 @@ export function buildSteve(suit: SuitDef, scale = 1): SteveRig {
     rocket: new THREE.MeshLambertMaterial({ color: '#d8392b' }),
     stick: new THREE.MeshLambertMaterial({ color: '#c9a86a' }),
     tip: new THREE.MeshLambertMaterial({ color: '#f2c14e' }),
+    cheek: new THREE.MeshLambertMaterial({ color: '#f29a8a' }),
+    hair: new THREE.MeshLambertMaterial({ color: '#4a2f1d' }),
+    steel: new THREE.MeshLambertMaterial({ color: '#9aa1ab' }),
+    flame: new THREE.MeshBasicMaterial({ color: '#ffb347' }),
   };
   const geos: THREE.BufferGeometry[] = [];
   const track = <T extends THREE.Mesh>(m: T): T => { geos.push(m.geometry); return m; };
@@ -268,41 +310,102 @@ export function buildSteve(suit: SuitDef, scale = 1): SteveRig {
     const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); joints[name] = g; return g;
   };
 
-  // pelvis sits at the origin of root; the figure stands with feet at y = -0.95
+  // pelvis sits at the origin of root; the figure stands with its soles `stand` below it
+  const L = ph.torsoLen, Wd = ph.torsoW, Dp = ph.torsoD;
   const pelvis = new THREE.Group();
   root.add(pelvis);
-  const trunks = track(capsule(0.2, 0.12, mats.secondary)); trunks.position.y = 0.02; trunks.scale.set(1.15, 1, 0.9); pelvis.add(trunks);
+  const trunks = track(capsule(0.2, 0.12, mats.secondary)); trunks.position.y = 0.02; trunks.scale.set(1.15 * Wd, 1, 0.9 * Dp); pelvis.add(trunks);
 
-  const torso = J('torso', pelvis, 0, 0.1, 0);
-  const chest = track(capsule(0.22, 0.42, mats.primary)); chest.position.y = 0.33; chest.scale.set(1.2, 1, 0.85); torso.add(chest);
-  const belt = track(new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.07, 12), mats.accent)); belt.position.y = 0.04; belt.scale.set(1.15, 1, 0.9); torso.add(belt);
+  const torso = J('torso', pelvis, 0, 0.1 * L, 0);
+  const chest = track(capsule(0.22, 0.42 * L, mats.primary)); chest.position.y = 0.33 * L; chest.scale.set(1.2 * Wd, 1, 0.85 * Dp); torso.add(chest);
+  if (ph.belly > 0) {
+    // Chris: a big round tummy, more cannonball than man
+    const tum = track(new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), mats.primary));
+    tum.position.set(0, 0.2 * L, -0.06 * Dp); tum.scale.set(1.15 * Wd * ph.belly, 1.0, 1.1 * Dp * ph.belly); torso.add(tum);
+  }
+  if (ph.pecs > 0) {
+    // Hank: broad chest and shoulders tapering to the waist
+    const pec = track(new THREE.Mesh(new THREE.SphereGeometry(0.25, 14, 10), mats.primary));
+    pec.position.set(0, 0.5 * L, -0.02); pec.scale.set(1.45 * Wd, 0.75, 0.95 * Dp); torso.add(pec);
+    for (const sx of [-1, 1]) {
+      const delt = track(new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), mats.secondary));
+      delt.position.set(sx * 0.31 * ph.shoulderW, 0.58 * L, 0); delt.scale.set(1.2, 1, 1.1); torso.add(delt);
+    }
+  }
+  const belt = track(new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.07, 12), mats.accent)); belt.position.y = 0.04 * L; belt.scale.set(1.15 * Wd * (ph.belly > 0 ? 1.15 : 1), 1, 0.9 * Dp * (ph.belly > 0 ? 1.25 : 1)); torso.add(belt);
   // emblem on the chest (faces -z)
-  const emblem = emblemMesh(suit, mats.accent); if (emblem) { emblem.position.set(0, 0.42, -0.235); torso.add(emblem); geos.push(emblem.geometry); }
+  const emblem = emblemMesh(suit, mats.accent);
+  if (emblem) {
+    // on Chris the star sits proudly on the front of his tummy
+    if (ph.belly > 0) emblem.position.set(0, 0.32 * L, -0.5 * ph.belly);
+    else emblem.position.set(0, 0.42 * L, -(0.235 * Dp + (ph.pecs > 0 ? 0.03 : 0)));
+    torso.add(emblem); geos.push(emblem.geometry);
+  }
 
-  const head = J('head', torso, 0, 0.66, 0);
-  const skull = track(new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 10), mats.skin)); skull.position.y = 0.17; head.add(skull);
-  const helmet = track(new THREE.Mesh(new THREE.SphereGeometry(0.205, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), mats.accent)); helmet.position.y = 0.19; head.add(helmet);
-  const goggles = track(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.09, 0.08), mats.dark)); goggles.position.set(0, 0.2, -0.16); head.add(goggles);
-  const lens1 = track(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.03), mats.glass)); lens1.position.set(-0.07, 0.2, -0.2); head.add(lens1);
-  const lens2 = lens1.clone(); lens2.position.x = 0.07; head.add(lens2);
-  const nose = track(new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 5), mats.skin)); nose.position.set(0, 0.12, -0.19); head.add(nose);
-  const mouth = track(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.02), mats.dark)); mouth.position.set(0, 0.06, -0.185); head.add(mouth);
-  const chin = track(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.08, 8), mats.skin)); chin.position.y = 0.02; head.add(chin);
+  const head = J('head', torso, 0, 0.66 * L, 0);
+  const hs = new THREE.Group(); hs.scale.set(ph.head, ph.head * ph.headLong, ph.head); head.add(hs);
+  const skull = track(new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 10), mats.skin)); skull.position.y = 0.17; hs.add(skull);
+  const helmet = track(new THREE.Mesh(new THREE.SphereGeometry(0.205, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), mats.accent)); helmet.position.y = 0.19; hs.add(helmet);
+  const nose = track(new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 5), mats.skin)); nose.position.set(0, 0.12, -0.19); hs.add(nose);
+  if (ph.style === 'hank') {
+    // goggles pushed up on the helmet, eyes, brows, a confident grin and a square jaw
+    const gog = track(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.07, 0.06), mats.dark)); gog.position.set(0, 0.32, -0.14); gog.rotation.x = -0.5; hs.add(gog);
+    for (const sx of [-1, 1]) {
+      const eye = track(new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 5), mats.dark)); eye.position.set(sx * 0.065, 0.2, -0.18); hs.add(eye);
+      const brow = track(new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.015, 0.02), mats.hair)); brow.position.set(sx * 0.065, 0.245, -0.18); brow.rotation.z = sx * -0.15; hs.add(brow);
+    }
+    const grin = track(new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.025, 0.02), mats.glass)); grin.position.set(0, 0.07, -0.19); hs.add(grin);
+    const jaw = track(new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.1, 0.2), mats.skin)); jaw.position.set(0, 0.04, -0.04); hs.add(jaw);
+    const quiff = track(new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), mats.hair)); quiff.position.set(0.05, 0.29, -0.19); quiff.scale.set(1.4, 0.7, 0.8); hs.add(quiff);
+  } else {
+    const goggles = track(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.09, 0.08), mats.dark)); goggles.position.set(0, 0.2, -0.16); hs.add(goggles);
+    const lens1 = track(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.03), mats.glass)); lens1.position.set(-0.07, 0.2, -0.2); hs.add(lens1);
+    const lens2 = lens1.clone(); lens2.position.x = 0.07; hs.add(lens2);
+    const mouth = track(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.02), mats.dark)); mouth.position.set(0, 0.06, -0.185); hs.add(mouth);
+    const chin = track(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.08, 8), mats.skin)); chin.position.y = 0.02; hs.add(chin);
+  }
+  if (ph.style === 'chris') {
+    // rosy cheeks and a handlebar moustache
+    for (const sx of [-1, 1]) {
+      const ck = track(new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), mats.cheek)); ck.position.set(sx * 0.12, 0.11, -0.14); hs.add(ck);
+      const mo = track(new THREE.Mesh(new THREE.CapsuleGeometry(0.022, 0.09, 3, 6), mats.hair)); mo.position.set(sx * 0.06, 0.095, -0.19); mo.rotation.z = sx * 1.2; hs.add(mo);
+      const curl = track(new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 5), mats.hair)); curl.position.set(sx * 0.115, 0.115, -0.18); hs.add(curl);
+    }
+  }
+  if (ph.style === 'pete') {
+    // a nose-cone helmet: when he flies prone it points straight ahead like a shell
+    const cone = track(new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.3, 14), mats.accent)); cone.position.y = 0.43; hs.add(cone);
+    const band = track(new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.02, 6, 16), mats.secondary)); band.position.y = 0.26; band.rotation.x = Math.PI / 2; hs.add(band);
+  }
 
   const arm = (side: 1 | -1) => {
-    const sh = J(side < 0 ? 'lShoulder' : 'rShoulder', torso, side * 0.3, 0.56, 0);
-    const upper = track(capsule(0.075, 0.26, mats.secondary)); upper.position.y = -0.17; sh.add(upper);
-    const el = J(side < 0 ? 'lElbow' : 'rElbow', sh, 0, -0.36, 0);
-    const fore = track(capsule(0.065, 0.24, mats.primary)); fore.position.y = -0.16; el.add(fore);
-    const hand = track(new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), mats.secondary)); hand.position.y = -0.34; el.add(hand);
+    const sh = J(side < 0 ? 'lShoulder' : 'rShoulder', torso, side * 0.3 * ph.shoulderW, 0.56 * L, 0);
+    const upper = track(capsule(0.075 * ph.armT, 0.26 * ph.arm, mats.secondary)); upper.position.y = -0.17 * ph.arm; sh.add(upper);
+    const el = J(side < 0 ? 'lElbow' : 'rElbow', sh, 0, -0.36 * ph.arm, 0);
+    const fore = track(capsule(0.065 * ph.armT, 0.24 * ph.arm, mats.primary)); fore.position.y = -0.16 * ph.arm; el.add(fore);
+    const hand = track(new THREE.Mesh(new THREE.SphereGeometry(0.08 * Math.sqrt(ph.armT), 8, 6), mats.secondary)); hand.position.y = -0.34 * ph.arm; el.add(hand);
   };
   arm(-1); arm(1);
+  const shoeNozzles: THREE.Object3D[] = [];
   const leg = (side: 1 | -1) => {
-    const hip = J(side < 0 ? 'lHip' : 'rHip', pelvis, side * 0.12, -0.05, 0);
-    const thigh = track(capsule(0.1, 0.32, mats.primary)); thigh.position.y = -0.21; hip.add(thigh);
-    const knee = J(side < 0 ? 'lKnee' : 'rKnee', hip, 0, -0.44, 0);
-    const shin = track(capsule(0.085, 0.3, mats.primary)); shin.position.y = -0.2; knee.add(shin);
-    const boot = track(new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.12, 0.3), mats.secondary)); boot.position.set(0, -0.42, -0.05); knee.add(boot);
+    const hip = J(side < 0 ? 'lHip' : 'rHip', pelvis, side * 0.12 * Wd, -0.05, 0);
+    const thigh = track(capsule(0.1 * ph.legT, 0.32 * ph.leg, mats.primary)); thigh.position.y = -0.21 * ph.leg; hip.add(thigh);
+    const knee = J(side < 0 ? 'lKnee' : 'rKnee', hip, 0, -0.44 * ph.leg, 0);
+    const shin = track(capsule(0.085 * ph.legT, 0.3 * ph.leg, mats.primary)); shin.position.y = -0.2 * ph.leg; knee.add(shin);
+    const bw = 0.15 * Math.sqrt(ph.legT);
+    const boot = track(new THREE.Mesh(new THREE.BoxGeometry(bw, 0.12, 0.3), mats.secondary)); boot.position.set(0, -0.42 * ph.leg, -0.05); knee.add(boot);
+    if (ph.rocketShoes) {
+      // Hank: a steel thruster on each heel firing out past the sole, along the leg (straight back when he dives)
+      const tilt = -0.25;
+      const thr = new THREE.Group(); thr.position.set(0, -0.36 * ph.leg, 0.13); thr.rotation.x = tilt; knee.add(thr);
+      const can = track(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.2, 10), mats.steel)); thr.add(can);
+      const bell = track(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.07, 10, 1, true), mats.dark)); bell.position.y = -0.13; thr.add(bell);
+      const fin = track(new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.12, 0.1), mats.rocket)); fin.position.set(0, 0.02, 0.07); thr.add(fin);
+      const core = track(new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.14, 8), mats.flame)); core.position.y = -0.22; core.rotation.x = Math.PI; thr.add(core);
+      // +z of this marker is the exhaust direction (down the leg)
+      const nz = new THREE.Object3D(); nz.position.y = -0.17; nz.rotation.x = Math.PI / 2; thr.add(nz);
+      shoeNozzles.push(nz);
+    }
   };
   leg(-1); leg(1);
 
@@ -310,21 +413,21 @@ export function buildSteve(suit: SuitDef, scale = 1): SteveRig {
   let cape: THREE.Mesh | null = null;
   let cloth: ClothCape | null = null;
   {
-    cloth = new ClothCape(torso, group, mats.cape, scale);
+    cloth = new ClothCape(torso, group, mats.cape, scale, ph);
     cape = cloth.mesh;
     group.add(cape);
     geos.push(cape.geometry);
   }
 
   // backpack frame with bottle rockets
-  const pack = track(new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.36, 0.08), mats.dark)); pack.position.set(0, 0.36, 0.24); torso.add(pack);
+  const pack = track(new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.36, 0.08), mats.dark)); pack.position.set(0, 0.36 * L, 0.24 * Dp); torso.add(pack);
   const rockets: THREE.Group[] = [];
   const rocketTips: THREE.Mesh[] = [];
   const maxR = BOOST_CONFIG.rockets.max;
   for (let i = 0; i < maxR; i++) {
     const g = new THREE.Group();
     const t = maxR === 1 ? 0 : i / (maxR - 1);
-    g.position.set((t - 0.5) * 0.28, 0.2 + (i % 2) * 0.1, 0.3);
+    g.position.set((t - 0.5) * 0.28, (0.2 + (i % 2) * 0.1) * L, 0.3 * Dp);
     g.rotation.x = -0.35; // nozzles point back and slightly down
     const bodyR = track(new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.2, 7), mats.rocket)); bodyR.position.y = 0.1; g.add(bodyR);
     const cone = track(new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.07, 7), mats.tip)); cone.position.y = 0.235; g.add(cone);
@@ -351,6 +454,7 @@ export function buildSteve(suit: SuitDef, scale = 1): SteveRig {
 
   const rig: SteveRig = {
     group, body, root, rockets, rocketTips, cape, pack, height: 1.9, velocity,
+    physique: ph, stand: standHeight(ph), tuckReach: 0.98 * (0.55 * L + 0.4 * ph.head), shoeNozzles,
     setPose(p, s = 6) {
       const pose = resolve(p);
       speed = s;

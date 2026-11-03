@@ -22,6 +22,8 @@ writeFileSync(join(dir, 'flightPlan.js'), load('game/flightPlan.ts', { "'../core
 
 const { TIERS, TIER_CONFIG } = await import(join(dir, 'config.js'));
 const { multiplierFor } = await import(join(dir, 'outcome.js'));
+const FUMBLE_UNITS = 150;
+const worldLength = D => (D <= 2100 ? D : 2100 + 630 * Math.log(D / 2100));
 const { buildFlightPlan } = await import(join(dir, 'flightPlan.js'));
 const { Rng } = await import(join(dir, 'rng.js'));
 
@@ -48,5 +50,19 @@ test('flight plans end exactly at the resolved distance', () => {
     assert.equal(plan.v[plan.v.length - 1], 0);
     for (let j = 1; j < plan.s.length; j++) assert.ok(plan.s[j] >= plan.s[j - 1] - 1e-6, 'monotonic');
     for (const e of plan.events) assert.ok(e.s >= 0 && e.s <= plan.L);
+  }
+});
+
+test('losses are gentle: few big losses and almost no misfires at any stake', () => {
+  for (const tier of TIERS) {
+    const N = 100000;
+    let big = 0, misfire = 0;
+    for (let i = 0; i < N; i++) {
+      const m = multiplierFor(tier, (i + 0.5) / N, 0.96);
+      if (m < 0.3) big++;
+      if (worldLength(m * TIER_CONFIG[tier].baseDistance) < FUMBLE_UNITS) misfire++;
+    }
+    assert.ok(big / N <= 0.13, `${tier}: ${(big / N * 100).toFixed(1)}% of rounds lose more than 70%`);
+    assert.ok(misfire / N <= 0.01, `${tier}: ${(misfire / N * 100).toFixed(2)}% misfires`);
   }
 });

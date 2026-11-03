@@ -8,7 +8,6 @@ import { Rng } from '../core/rng';
 import type { FlightPlan, Surface } from './flightPlan';
 import type { ParticleSystem } from './particles';
 import { GeoBatch, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture, stripQuad } from './geobatch';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MACRO, buildFarMacroTile, buildMacroTile, makeCityCtx, type AnimatedObject, type Batches, type BlockInfo, type CityCtx, type District } from './city';
 import { Route, PX, PZ, STREET_HALF, type RouteSample } from './route';
 import { Terrain } from './terrain';
@@ -40,7 +39,7 @@ interface Tile {
 interface TrackPiece {
   group: THREE.Group;
   disposables: { dispose(): void }[];
-  labels: { s: number; mat: THREE.MeshBasicMaterial; fill: string; stroke: string }[];
+  labels: { s: number; mat: THREE.MeshBasicMaterial; fill: string }[];
 }
 
 function fmtCash(v: number): string {
@@ -51,21 +50,63 @@ function fmtCash(v: number): string {
   return '$' + v.toFixed(2);
 }
 
-/** Chunky cartoon lettering: heavy rounded face with an outline, both in shades of the surface it is painted on. */
-function makeLabel(text: string, fill: string, stroke: string, w = 320, h = 96): { tex: THREE.CanvasTexture; aspect: number } {
+/**
+ * The cash track's lettering: a custom squared typeface (no outline), drawn as thick strokes on a
+ * 4×7 grid with a slight forward slant, so it reads like crisp road paint rather than a sticker.
+ */
+const GLYPHS: Record<string, { w: number; paths: number[][] }> = {
+  '0': { w: 4, paths: [[0, 0, 4, 0, 4, 7, 0, 7, 0, 0]] },
+  '1': { w: 3, paths: [[0.5, 1.2, 2, 0, 2, 7]] },
+  '2': { w: 4, paths: [[0, 0, 4, 0, 4, 3.5, 0, 3.5, 0, 7, 4, 7]] },
+  '3': { w: 4, paths: [[0, 0, 4, 0, 4, 7, 0, 7], [1, 3.5, 4, 3.5]] },
+  '4': { w: 4, paths: [[0, 0, 0, 4.2, 4, 4.2], [3.2, 0, 3.2, 7]] },
+  '5': { w: 4, paths: [[4, 0, 0, 0, 0, 3.5, 4, 3.5, 4, 7, 0, 7]] },
+  '6': { w: 4, paths: [[4, 0, 0, 0, 0, 7, 4, 7, 4, 3.5, 0, 3.5]] },
+  '7': { w: 4, paths: [[0, 0, 4, 0, 4, 1.5, 2, 7]] },
+  '8': { w: 4, paths: [[0, 0, 4, 0, 4, 7, 0, 7, 0, 0], [0, 3.5, 4, 3.5]] },
+  '9': { w: 4, paths: [[4, 3.5, 0, 3.5, 0, 0, 4, 0, 4, 7, 0, 7]] },
+  '$': { w: 4, paths: [[4, 1, 0, 1, 0, 3.5, 4, 3.5, 4, 6, 0, 6], [2, -0.4, 2, 7.4]] },
+  '.': { w: 1.2, paths: [[0.6, 6.4, 0.6, 7]] },
+  'k': { w: 3.6, paths: [[0, 0, 0, 7], [3.6, 2.6, 0, 4.6, 3.6, 7]] },
+  'm': { w: 4.6, paths: [[0, 7, 0, 2.6, 4.6, 2.6, 4.6, 7], [2.3, 2.6, 2.3, 7]] },
+};
+
+function makeLabel(text: string, fill: string, w = 384, h = 96): { tex: THREE.CanvasTexture; aspect: number } {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const g = c.getContext('2d')!;
   g.clearRect(0, 0, w, h);
-  g.font = `900 ${Math.floor(h * 0.74)}px "Arial Rounded MT Bold", "Helvetica Rounded", "Nunito", "Varela Round", "Segoe UI Black", "Arial Black", Impact, sans-serif`;
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.lineJoin = 'round';
-  g.lineWidth = h * 0.2;
-  g.strokeStyle = stroke;
-  g.strokeText(text, w / 2, h / 2 + 3);
-  g.fillStyle = fill;
-  g.fillText(text, w / 2, h / 2 + 3);
+  const unit = h * 0.1;                        // grid unit in pixels (7 units tall glyphs)
+  const gap = 1.6;
+  let total = 0;
+  for (const ch of text) total += (GLYPHS[ch]?.w ?? 3) + gap;
+  total -= gap;
+  const scale = Math.min(unit, (w * 0.92) / total);
+  const x0 = (w - total * scale) / 2, y0 = (h - 7 * scale) / 2;
+  g.save();
+  g.translate(x0, y0);
+  g.transform(1, 0, -0.16, 1, 7 * scale * 0.16 * 0.5, 0);   // gentle forward slant
+  g.strokeStyle = fill;
+  g.lineWidth = scale * 1.15;
+  g.lineCap = 'butt';
+  g.lineJoin = 'miter';
+  g.miterLimit = 4;
+  let x = 0;
+  for (const ch of text) {
+    const gl = GLYPHS[ch];
+    if (gl) {
+      for (const path of gl.paths) {
+        g.beginPath();
+        for (let i = 0; i < path.length; i += 2) {
+          const px = (x + path[i]) * scale, py = path[i + 1] * scale;
+          if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+        }
+        g.stroke();
+      }
+    }
+    x += (gl?.w ?? 3) + gap;
+  }
+  g.restore();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.minFilter = THREE.LinearMipMapLinearFilter;
@@ -87,10 +128,10 @@ function materials(): { solid: THREE.Material; facade: THREE.Material; glass: TH
 
 /** Road ribbon paint per surface: base, kerb and track are shades of the same material. */
 const TRACK_STYLE: Record<Surface, { base: string; kerb: string; track: string; line: string; lane: string; cross: string; label: string; stroke: string }> = {
-  asphalt: { base: '#6f7378', kerb: '#8f8a80', track: '#777b81', line: '#5f6369', lane: '#b9a04a', cross: '#575b61', label: '#3e4147', stroke: '#9a9ea5' },
-  cobble:  { base: '#857a6e', kerb: '#a39888', track: '#8e8376', line: '#6f655a', lane: '#c2a874', cross: '#665c51', label: '#4a4038', stroke: '#b3a796' },
-  pavers:  { base: '#cdb994', kerb: '#b9a37c', track: '#d6c4a1', line: '#b39c74', lane: '#a88d62', cross: '#a3895f', label: '#6e5530', stroke: '#eadcbf' },
-  bridge:  { base: '#8b8f96', kerb: '#9ea3aa', track: '#969aa1', line: '#7a7e85', lane: '#a39f7a', cross: '#6e7279', label: '#4a4e55', stroke: '#aab0b8' },
+  asphalt: { base: '#6f7378', kerb: '#8f8a80', track: '#767a80', line: '#5f6369', lane: '#b9a04a', cross: '#d9d3c2', label: '#e6e0cf', stroke: '' },
+  cobble:  { base: '#857a6e', kerb: '#a39888', track: '#8c8175', line: '#6f655a', lane: '#c2a874', cross: '#efdcb8', label: '#f2e2c2', stroke: '' },
+  pavers:  { base: '#cdb994', kerb: '#b9a37c', track: '#c6b28c', line: '#b39c74', lane: '#a88d62', cross: '#7a5d33', label: '#6b4f2a', stroke: '' },
+  bridge:  { base: '#8b8f96', kerb: '#9ea3aa', track: '#92969d', line: '#7a7e85', lane: '#a39f7a', cross: '#f0f2f4', label: '#f7f8fa', stroke: '' },
 };
 
 export class World {
@@ -170,7 +211,7 @@ export class World {
     for (const [, p] of this.track) {
       for (const l of p.labels) {
         const old = l.mat.map;
-        const { tex } = makeLabel(fmtCash(l.s * cashPerUnit), l.fill, l.stroke);
+        const { tex } = makeLabel(fmtCash(l.s * cashPerUnit), l.fill);
         l.mat.map = tex;
         l.mat.needsUpdate = true;
         old?.dispose();
@@ -251,7 +292,9 @@ export class World {
     const solid = B.solid.build(this.mats.solid);
     const facade = B.facade.build(this.mats.facade);
     const glass = B.glass.build(this.mats.glass);
-    for (const m of [solid, facade, glass]) if (m) { group.add(m); disposables.push(m.geometry); }
+    // only the tiles along the flight line can ever have his shadow on them; the rest skip the lookup
+    const onLine = !far && (I === -1 || I === 0);
+    for (const m of [solid, facade, glass]) if (m) { m.receiveShadow = onLine; group.add(m); disposables.push(m.geometry); }
     for (const a of animated) group.add(a.obj);
     this.group.add(group);
     this.tiles.set(key, { key, far, group, disposables, animated, decoys });
@@ -280,7 +323,6 @@ export class World {
         B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7.4, hAt, 0.07), st.kerb);       // kerb line
         B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7, hAt, 0.09), st.base);         // road surface
       }
-      B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 6, hAt, 0.12), st.track);
       if (i % 2 === 0) {
         B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 0.09, hAt, 0.15), st.lane);
         B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.15, 3.5), st.line);
@@ -296,37 +338,35 @@ export class World {
         B.add(BOX, '#fff3b0', lx - a.nx * side * 1.1, ly + 5.85, lz - a.nz * side * 1.1, 0, a.heading, 0, 0.6, 0.3, 0.5);
       }
     }
-    // markers with a cash label either side, each marker's two labels baked into one mesh
+    // the cash lane: one straight lane on the flight line (not the winding road), a faint band,
+    // a tick every 10 units and a single number per tick, painted to suit the surface beneath
+    for (let i = 0; i < 4; i++) {
+      const qa = s0 + i * 10, qb = qa + 10;
+      const a = this.route.at(qa, this.sample), b = this.route.at(qb, this.sample2);
+      B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 1.9, hAt, 0.16), TRACK_STYLE[this.surfaceAt(qa + 5)].track);
+    }
     for (let m = 0; m < TRACK_STEP / MARK_STEP; m++) {
       const sm = s0 + m * MARK_STEP;
       if (sm <= 0) continue;
       const r0 = this.route.at(sm, this.sample);
-      const o0 = ro(sm);
-      const rx = r0.x + r0.nx * o0, rz = r0.z + r0.nz * o0;
       const st = TRACK_STYLE[this.surfaceAt(sm)];
-      const ax = rx - r0.tx * 0.18, az = rz - r0.tz * 0.18, bx = rx + r0.tx * 0.18, bz = rz + r0.tz * 0.18;
-      B.addRaw(stripQuad(ax, az, bx, bz, r0.nx, r0.nz, r0.nx, r0.nz, 6, hAt, 0.17), st.cross);
-      const { tex, aspect } = makeLabel(fmtCash(sm * this.params.cashPerUnit), st.label, st.stroke);
+      const ax = r0.x - r0.tx * 0.09, az = r0.z - r0.tz * 0.09, bx = r0.x + r0.tx * 0.09, bz = r0.z + r0.tz * 0.09;
+      B.addRaw(stripQuad(ax, az, bx, bz, r0.nx, r0.nz, r0.nx, r0.nz, 1.9, hAt, 0.18), st.cross);
+      const { tex, aspect } = makeLabel(fmtCash(sm * this.params.cashPerUnit), st.label);
       disposables.push(tex);
       const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
       disposables.push(mat);
-      labels.push({ s: sm, mat, fill: st.label, stroke: st.stroke });
-      const hgt = 2.0, w = hgt * aspect;
-      const parts: THREE.BufferGeometry[] = [];
-      for (const side of [-1, 1]) {
-        const g = new THREE.PlaneGeometry(w, hgt);
-        g.rotateX(-Math.PI / 2);
-        g.rotateY(r0.heading);
-        const px = rx + r0.nx * side * 3.5 - r0.tx * 1.3, pz = rz + r0.nz * side * 3.5 - r0.tz * 1.3;
-        g.translate(px, hAt(px, pz) + 0.2, pz);
-        parts.push(g);
-      }
-      const merged = mergeGeometries(parts, false);
-      for (const g of parts) g.dispose();
-      if (merged) { const lm = new THREE.Mesh(merged, mat); lm.matrixAutoUpdate = false; group.add(lm); disposables.push(merged); }
+      labels.push({ s: sm, mat, fill: st.label });
+      const hgt = 1.45, w = hgt * aspect;
+      const lg = new THREE.PlaneGeometry(w, hgt);
+      lg.rotateX(-Math.PI / 2);
+      lg.rotateY(r0.heading);
+      const px = r0.x - r0.tx * 1.0, pz = r0.z - r0.tz * 1.0;
+      lg.translate(px, hAt(px, pz) + 0.2, pz);
+      const lm = new THREE.Mesh(lg, mat); lm.matrixAutoUpdate = false; group.add(lm); disposables.push(lg);
     }
     const mesh = B.build(this.mats.solid);
-    if (mesh) { group.add(mesh); disposables.push(mesh.geometry); }
+    if (mesh) { mesh.receiveShadow = true; group.add(mesh); disposables.push(mesh.geometry); }
     this.group.add(group);
     this.track.set(k, { group, disposables, labels });
   }
@@ -499,7 +539,7 @@ export class World {
     dome.renderOrder = -10;
     g.add(dome);
     const sun = new THREE.Mesh(new THREE.CircleGeometry(60, 24), new THREE.MeshBasicMaterial({ color: '#fff6c8', fog: false, depthWrite: false }));
-    sun.position.set(-380, 520, -1050);
+    sun.position.set(-150, 1050, 480);
     sun.lookAt(0, 0, 0);
     g.add(sun);
     const glow = new THREE.Mesh(new THREE.CircleGeometry(120, 24), new THREE.MeshBasicMaterial({ color: '#fff6c8', fog: false, transparent: true, opacity: 0.25, depthWrite: false }));

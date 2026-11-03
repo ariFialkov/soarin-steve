@@ -11,6 +11,8 @@ export const TIERS: Tier[] = ['easy', 'medium', 'hard', 'expert'];
 
 export interface TierConfig {
   label: string;
+  /** the stuntman who flies at this stake */
+  character: string;
   stake: number;           // fixed stake for this tier (currency units)
   baseDistance: number;    // distance in metres that corresponds to a 1.00x result
   maxMultiplier: number;   // the largest multiplier the distribution can produce
@@ -20,63 +22,80 @@ export interface TierConfig {
 }
 
 export const TIER_CONFIG: Record<Tier, TierConfig> = {
+  // Loss buckets sit near the middle (few big losses, almost no misfires) and the tables are built so
+  // their raw expectation is already close to the RTP, so rescaling does not crush every loss to zero.
   easy: {
     label: 'Rookie',
+    character: "Soarin' Steve",
     stake: 1,
-    baseDistance: 420,
+    baseDistance: 630,
     maxMultiplier: 20,
     accent: '#7bc96f',
     buckets: [
-      { p: 0.28, lo: 0.15, hi: 0.6 },
-      { p: 0.30, lo: 0.6, hi: 1.0 },
-      { p: 0.27, lo: 1.0, hi: 2.0 },
-      { p: 0.11, lo: 2.0, hi: 5.0 },
-      { p: 0.04, lo: 5.0, hi: 20 },
+      { p: 0.05, lo: 0.3, hi: 0.45 },
+      { p: 0.30, lo: 0.45, hi: 0.8 },
+      { p: 0.30, lo: 0.8, hi: 1.0 },
+      { p: 0.24, lo: 1.0, hi: 1.6 },
+      { p: 0.08, lo: 1.6, hi: 3 },
+      { p: 0.025, lo: 3, hi: 8 },
+      { p: 0.005, lo: 8, hi: 20 },
     ],
   },
   medium: {
     label: 'Pro',
+    character: 'Cannonball Chris',
     stake: 5,
-    baseDistance: 620,
+    baseDistance: 930,
     maxMultiplier: 50,
     accent: '#5fb8e6',
     buckets: [
-      { p: 0.34, lo: 0.1, hi: 0.6 },
-      { p: 0.26, lo: 0.6, hi: 1.0 },
-      { p: 0.25, lo: 1.0, hi: 2.5 },
-      { p: 0.11, lo: 2.5, hi: 8 },
-      { p: 0.035, lo: 8, hi: 20 },
-      { p: 0.005, lo: 20, hi: 50 },
+      { p: 0.06, lo: 0.25, hi: 0.45 },
+      { p: 0.31, lo: 0.45, hi: 0.8 },
+      { p: 0.29, lo: 0.8, hi: 1.0 },
+      { p: 0.22, lo: 1.0, hi: 1.6 },
+      { p: 0.085, lo: 1.6, hi: 3.5 },
+      { p: 0.025, lo: 3.5, hi: 10 },
+      { p: 0.007, lo: 10, hi: 30 },
+      { p: 0.0012, lo: 30, hi: 50 },
     ],
   },
   hard: {
     label: 'Daredevil',
+    character: 'Projectile Pete',
     stake: 20,
-    baseDistance: 880,
+    baseDistance: 1320,
     maxMultiplier: 150,
     accent: '#f3a35c',
     buckets: [
-      { p: 0.40, lo: 0.05, hi: 0.5 },
-      { p: 0.22, lo: 0.5, hi: 1.0 },
-      { p: 0.22, lo: 1.0, hi: 3 },
-      { p: 0.11, lo: 3, hi: 10 },
-      { p: 0.04, lo: 10, hi: 40 },
-      { p: 0.01, lo: 40, hi: 150 },
+      { p: 0.08, lo: 0.2, hi: 0.45 },
+      { p: 0.32, lo: 0.45, hi: 0.8 },
+      { p: 0.28, lo: 0.8, hi: 1.0 },
+      { p: 0.20, lo: 1.0, hi: 1.5 },
+      { p: 0.075, lo: 1.5, hi: 3 },
+      { p: 0.025, lo: 3, hi: 10 },
+      { p: 0.006, lo: 10, hi: 40 },
+      { p: 0.0012, lo: 40, hi: 90 },
+      { p: 0.0003, lo: 90, hi: 150 },
     ],
   },
   expert: {
     label: 'Legend',
+    character: 'Heatseeker Hank',
     stake: 100,
-    baseDistance: 1200,
+    baseDistance: 1800,
     maxMultiplier: 500,
     accent: '#e5679a',
     buckets: [
-      { p: 0.46, lo: 0.0, hi: 0.5 },
-      { p: 0.19, lo: 0.5, hi: 1.0 },
-      { p: 0.19, lo: 1.0, hi: 3 },
-      { p: 0.10, lo: 3, hi: 12 },
-      { p: 0.045, lo: 12, hi: 60 },
-      { p: 0.015, lo: 60, hi: 500 },
+      { p: 0.10, lo: 0.15, hi: 0.42 },
+      { p: 0.32, lo: 0.42, hi: 0.8 },
+      { p: 0.27, lo: 0.8, hi: 1.0 },
+      { p: 0.19, lo: 1.0, hi: 1.5 },
+      { p: 0.075, lo: 1.5, hi: 3 },
+      { p: 0.025, lo: 3, hi: 10 },
+      { p: 0.006, lo: 10, hi: 40 },
+      { p: 0.0012, lo: 40, hi: 120 },
+      { p: 0.0003, lo: 120, hi: 300 },
+      { p: 0.00008, lo: 300, hi: 500 },
     ],
   },
 };

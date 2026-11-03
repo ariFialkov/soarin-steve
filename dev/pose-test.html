@@ -1,19 +1,31 @@
 <!doctype html><html><body style="margin:0;background:#bfe3ff"><canvas id="c"></canvas>
 <script type="module">
 import * as THREE from 'three';
-import { buildSteve, POSES } from '/src/game/steve.ts';
-import { suitById } from '/src/data/suits.ts';
-import { buildCannon } from '/src/game/cannon.ts';
+import { buildSteve, PHYSIQUES } from '/src/game/steve.ts';
+import { defaultSuitFor } from '/src/data/suits.ts';
+const W = 1280, H = 720;
 const r = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
-r.setSize(1280, 720); r.outputColorSpace = THREE.SRGBColorSpace;
+r.setSize(W, H); r.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene(); scene.background = new THREE.Color('#bfe3ff');
 scene.add(new THREE.HemisphereLight('#e8f6ff', '#9a9a8a', 1.05));
-const sun = new THREE.DirectionalLight('#fff4d6', 1.7); sun.position.set(-30, 50, -25); scene.add(sun);
-const cam = new THREE.PerspectiveCamera(40, 1280/720, 0.1, 100);
-const names = Object.keys(POSES);
-const suit = suitById(new URLSearchParams(location.search).get('suit') || 'golden-cannonball');
-names.forEach((n, i) => { const s = buildSteve(suit, 1); s.snapPose(n); s.rockets.forEach((k, j) => k.visible = j < 3); s.group.position.set((i - (names.length-1)/2) * 1.6, 0, 0); s.group.rotation.y = 0.6; if (n === 'superman' || n === 'squirrel' || n === 'tuck' || n === 'flail') s.root.rotation.x = -Math.PI/2; if (n === 'sprawl') s.root.rotation.x = Math.PI/2; scene.add(s.group); for (let k = 0; k < 150; k++) s.update(1/60, k/60); });
-const cannon = buildCannon(); cannon.group.position.set(0, -3.2, 0); cannon.setCharge(0.5); cannon.update(0, 0); scene.add(cannon.group);
-cam.position.set(0, 1.5, 15); cam.lookAt(0, -0.5, 0);
+const sun = new THREE.DirectionalLight('#fff4d6', 1.7); sun.position.set(-10, 50, 40); scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 20), new THREE.MeshLambertMaterial({ color: '#8f8a80' })); ground.rotation.x = -Math.PI / 2; scene.add(ground);
+const mode = new URLSearchParams(location.search).get('mode') || 'hero';
+const tiers = ['easy', 'medium', 'hard', 'expert'];
+tiers.forEach((t, i) => {
+  const s = buildSteve(defaultSuitFor(t), 0.8, PHYSIQUES[t]);
+  s.group.position.set((i - 1.5) * 2.2, 0, 0);
+  if (mode === 'fly') {
+    s.snapPose('superman'); s.root.rotation.x = -Math.PI / 2; s.group.position.y = 1.4; s.group.rotation.y = -0.9;
+    s.velocity.set(0, 0, -30);
+  } else {
+    s.snapPose('hero'); s.root.position.y = s.stand; s.group.rotation.y = Math.PI + 0.3;
+  }
+  s.rockets.forEach((k, j) => k.visible = false); s.pack.visible = false;
+  scene.add(s.group);
+  for (let k = 0; k < 120; k++) s.update(1 / 60, k / 60);
+});
+const cam = new THREE.PerspectiveCamera(32, W / H, 0.1, 100);
+cam.position.set(0, mode === 'fly' ? 3.2 : 1.3, mode === 'fly' ? 11 : 8); cam.lookAt(0, mode === 'fly' ? 1.3 : 0.8, 0);
 r.render(scene, cam); window.done = true;
 </script></body></html>
