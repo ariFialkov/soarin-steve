@@ -635,9 +635,12 @@ export class Engine {
     // a little idle sway and a wave now and then
     this.steve.body.rotation.set(0, Math.sin(t * 0.7) * 0.06, Math.sin(t * 1.1) * 0.02);
     const a = Math.sin(t * 0.18) * 0.9;
-    const target = new THREE.Vector3(Math.sin(a) * 4.6, LAUNCH_H + 1.9 + Math.sin(t * 0.3) * 0.2, Math.cos(a) * 4.6 + 1.2);
+    // portrait screens see a narrower slice, so step back and frame the stuntman beside the cannon
+    const portrait = Math.min(1, this.camera.aspect * 1.5);
+    const rad = 4.6 / Math.max(0.55, portrait);
+    const target = new THREE.Vector3(Math.sin(a) * rad, LAUNCH_H + 1.9 + (rad - 4.6) * 0.35 + Math.sin(t * 0.3) * 0.2, Math.cos(a) * rad + 1.2);
     this.camera.position.lerp(target, Math.min(1, dt * 1.5));
-    this.camera.lookAt(0.6, LAUNCH_H + 1.1, -1.0);
+    this.camera.lookAt(0.6 + (1 - portrait) * 3.6, LAUNCH_H + 1.1, -1.0);
   }
 
   private updateAiming(dt: number): void {
