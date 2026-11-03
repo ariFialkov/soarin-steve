@@ -248,25 +248,45 @@ export class World {
     const mid = this.route.at(s0 + 5, this.sample);
     const onBridge = this.city.isRiverRow(Math.floor(-mid.z / PZ)) && Math.abs(mid.tz) > 0.5;
     const st = onBridge ? TRACK_STYLE.bridge : TRACK_STYLE.asphalt;
-    // the lighter strip, in sub-segments so it follows the fillets
-    const sub = 4;
+    // the road ribbon winds beneath the straight flight line: asphalt, kerbs, lighter track, lane lines
+    const sub = 5;
+    const ro = (q: number) => this.route.roadOffset(q);
     for (let i = 0; i < sub; i++) {
-      const a = this.route.at(s0 + (i / sub) * TRACK_STEP, this.sample);
-      const b = this.route.at(s0 + ((i + 1) / sub) * TRACK_STEP, this.sample2);
-      B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 6, hAt, 0.06), st.track);
-      // lane lines: centre (yellow) and the two outer lanes
-      if (i % 2 === 0) {
-        B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 0.09, hAt, 0.09), st.lane);
-        B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.09, 3.5), st.line);
-        B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.09, -3.5), st.line);
+      const qa = s0 + (i / sub) * TRACK_STEP, qb = s0 + ((i + 1) / sub) * TRACK_STEP;
+      const a = this.route.at(qa, this.sample);
+      const b = this.route.at(qb, this.sample2);
+      const oa = ro(qa), ob = ro(qb);
+      const ax = a.x + a.nx * oa, az = a.z + a.nz * oa, bx = b.x + b.nx * ob, bz = b.z + b.nz * ob;
+      if (!onBridge) {
+        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7.4, hAt, 0.07), '#8f8a80');     // kerb line
+        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7, hAt, 0.09), '#6f7378');        // asphalt
       }
+      B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 6, hAt, 0.12), st.track);
+      if (i % 2 === 0) {
+        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 0.09, hAt, 0.15), st.lane);
+        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.15, 3.5), st.line);
+        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.15, -3.5), st.line);
+      }
+    }
+    // lamps along the ribbon edges every 20 units, alternating sides
+    if (k % 2 === 0 && !onBridge) {
+      const r = this.route.at(s0 + 5, this.sample);
+      const o = ro(s0 + 5);
+      const side = (k / 2) % 2 === 0 ? 1 : -1;
+      const lx = r.x + r.nx * (o + side * 8.6), lz = r.z + r.nz * (o + side * 8.6);
+      const ly = hAt(lx, lz);
+      B.add(CYL_LO, '#4b515b', lx, ly + 3, lz, 0, 0, 0, 0.16, 6, 0.16);
+      B.add(BOX, '#4b515b', lx - r.nx * side * 0.6, ly + 6, lz - r.nz * side * 0.6, 0, r.heading, 0, 1.3, 0.14, 0.14);
+      B.add(BOX, '#fff3b0', lx - r.nx * side * 1.1, ly + 5.85, lz - r.nz * side * 1.1, 0, r.heading, 0, 0.6, 0.3, 0.5);
     }
     let label: TrackPiece['label'] = null;
     if (k > 0) {
-      const r = this.route.at(s0, this.sample);
+      const r0 = this.route.at(s0, this.sample);
+      const o0 = ro(s0);
+      const r = { ...r0, x: r0.x + r0.nx * o0, z: r0.z + r0.nz * o0 };
       // cross marker
       const ax = r.x - r.tx * 0.18, az = r.z - r.tz * 0.18, bx = r.x + r.tx * 0.18, bz = r.z + r.tz * 0.18;
-      B.addRaw(stripQuad(ax, az, bx, bz, r.nx, r.nz, r.nx, r.nz, 6, hAt, 0.11), st.cross);
+      B.addRaw(stripQuad(ax, az, bx, bz, r.nx, r.nz, r.nx, r.nz, 6, hAt, 0.17), st.cross);
       const { tex, aspect } = makeLabel(fmtCash(s0 * this.params.cashPerUnit), st.label, st.stroke);
       disposables.push(tex);
       const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
@@ -277,7 +297,7 @@ export class World {
         const hgt = 2.0;
         m.scale.set(hgt * aspect, hgt, 1);
         const px = r.x + r.nx * side * 3.5 - r.tx * 1.3, pz = r.z + r.nz * side * 3.5 - r.tz * 1.3;
-        m.position.set(px, hAt(px, pz) + 0.14, pz);
+        m.position.set(px, hAt(px, pz) + 0.2, pz);
         m.rotation.set(-Math.PI / 2, 0, 0);
         m.rotateZ(r.heading);
         group.add(m);

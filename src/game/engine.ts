@@ -142,7 +142,11 @@ export class Engine {
 
     this.cannon = buildCannon();
     this.cannon.group.position.y = LAUNCH_H;
+    this.cannon.group.scale.setScalar(1.4);
     this.scene.add(this.cannon.group);
+    // open on a high shot of the roof and sweep down to the cannon (never from street level)
+    this.camera.position.set(9, LAUNCH_H + 14, 16);
+    this.camera.lookAt(0, LAUNCH_H + 1.5, -2);
     this.blower = this.buildBlower();
     this.blower.visible = false;
     this.scene.add(this.blower);
@@ -237,17 +241,21 @@ export class Engine {
     this.spin = 0; this.spinRate = 0;
   }
 
-  /** Steve tucked in the cannon, ready to fire (aiming) */
+  /** Steve tucked in the barrel, only his helmet showing at the muzzle (aiming) */
   private placeInCannon(): void {
     if (!this.steve) return;
     const s = this.steve;
     this.cannon.muzzle(this.tmpV, this.tmpV2);
-    s.group.position.copy(this.tmpV).addScaledVector(this.tmpV2, -0.9);
+    const dir = this.tmpV2;
+    // the tuck is centred on the pelvis; the head sits about 1.2 units up the body axis
+    s.group.position.copy(this.tmpV).addScaledVector(dir, -1.35);
     s.group.rotation.set(0, 0, 0);
     s.body.position.set(0, 0, 0);
     s.body.rotation.set(0, 0, 0);
     s.root.position.set(0, 0, 0);
-    s.root.rotation.set(Math.atan2(this.tmpV2.y, -this.tmpV2.z) + 0.3, 0, 0);
+    // body +y (head) along the barrel axis: rotate about x by (elevation - 90°)
+    const elev = Math.atan2(dir.y, -dir.z);
+    s.root.rotation.set(elev - Math.PI / 2, 0, 0);
     s.snapPose('tuck');
   }
 
@@ -318,9 +326,8 @@ export class Engine {
     audio.boom();
     this.particles.emit({ pos: this.tmpV.clone(), vel: this.tmpV2.clone().multiplyScalar(9), spread: 3, count: 50, life: 1.4, size: 1.0, endSize: 2.6, colors: ['#ffffff', '#e9e4da', '#cfc9bf'], drag: 1.6 });
     this.particles.emit({ pos: this.tmpV.clone(), vel: this.tmpV2.clone().multiplyScalar(14), spread: 4, count: 24, life: 0.5, size: 0.35, endSize: 0.05, colors: ['#ffd27f', '#fff1a8', '#ff9a3c'], drag: 2 });
-    this.spin = 0; this.spinRate = 11 + power * 5;
+    this.spin = -(Math.atan2(this.tmpV2.y, -this.tmpV2.z) - Math.PI / 2); this.spinRate = 11 + power * 5;
     this.steve.setPose('tuck', 12);
-    this.steve.root.rotation.set(0, 0, 0);
     this.steve.root.position.set(0, 0, 0);
 
     const boosts = { ...profile.boosts };
@@ -533,9 +540,9 @@ export class Engine {
     if (!this.steve) return;
     const p = this.pull;
     this.placeInCannon();
-    const target = new THREE.Vector3(0.8, LAUNCH_H + 3.2, 6.2 + p * 1.2);
+    const target = new THREE.Vector3(2.4, LAUNCH_H + 6.5, 11 + p * 1.5);
     this.camera.position.lerp(target, Math.min(1, dt * 4));
-    this.camera.lookAt(0, LAUNCH_H + 2.2, -8);
+    this.camera.lookAt(0, LAUNCH_H + 3.6, -10);
   }
 
   /** While the bet resolves Steve is already out of the barrel and climbing. */
@@ -646,7 +653,6 @@ export class Engine {
       case 'dart': sx = 0.05 * Math.sin(t * 2); yaw = 0.04 * Math.sin(t * 2); roll = 0.03 * Math.sin(t * 1.6); sy = 0.02 * Math.sin(t * 1.3); break;
       case 'drift': sx = 0.6 * Math.sin(t * 0.45) + 0.2 * Math.sin(t * 1.0); yaw = 0.15 * Math.cos(t * 0.45); roll = 0.2 * Math.cos(t * 0.45); sy = 0.06 * Math.sin(t * 0.7); break;
     }
-    const speedFrac = Math.min(1, v / plan.v0);
     const grounded = this.tau >= plan.landT;
     const air = grounded ? Math.max(0, 1 - (this.tau - plan.landT) / 0.3) : 1;
     sx = (sx + wind) * air; sy *= air; roll *= air; yaw *= air; pitch *= air;
@@ -661,9 +667,9 @@ export class Engine {
       else if (plan.fumble === 'spinout') { this.spinRate = 16; steve.setPose('tuck', 8); }
       else { this.spinRate += (7 - this.spinRate) * Math.min(1, dt * 2); steve.setPose('flail', 6); }
     } else if (grounded) {
-      // the wipeout: somersaulting along the pavement, slowing with the skid
+      // the wipeout: tumbling along the pavement at the speed he arrived with, slowing as he skids
       steve.setPose('flail', 10);
-      this.spinRate = 4 + 10 * speedFrac;
+      this.spinRate = Math.max(1.5, v / 1.1);
     } else if (tumbling) {
       steve.setPose('tuck', 10);
     } else if (descending) {
@@ -697,9 +703,9 @@ export class Engine {
     steve.root.rotation.set(targetRx, 0, tumbling ? 0 : -(roll * 0.3));
     steve.root.position.set(0, tumbling ? 0 : 0.15, 0);
     if (grounded && plan.ending === 'sprawl') {
-      // bounce along the ground while somersaulting
-      const skid = (this.tau - plan.landT) / Math.max(0.2, plan.T - plan.landT);
-      body.position.y = Math.abs(Math.sin(this.tau * 7)) * 0.5 * (1 - skid);
+      // hops along the ground while tumbling, smaller as he slows
+      const vf = Math.min(1, v / 25);
+      body.position.y = Math.abs(Math.sin(this.tau * (6 + vf * 6))) * 0.9 * vf;
       body.rotation.set(0, 0, 0);
       steve.root.position.set(0, 0.55, 0);
     }
@@ -718,7 +724,10 @@ export class Engine {
     // ---- camera: on the route centre line behind Steve, smooth in height
     const vNorm = Math.min(1, v / 60);
     const targetY = g.position.y + 2.2 + vNorm * 1.4;
-    this.camY += (targetY - this.camY) * Math.min(1, dt * 3);
+    // follow quickly, faster still on the way down, and never fall more than a few units behind
+    const falling = hNext < h;
+    this.camY += (targetY - this.camY) * Math.min(1, dt * (falling ? 7 : 4));
+    this.camY = THREE.MathUtils.clamp(this.camY, targetY - 2.5, targetY + 3.5);
     const back = 6 + vNorm * 3.5;
     const cb = this.world!.route.at(Math.max(0, s - back), this.rs2);
     this.camera.position.set(cb.x, this.camY, cb.z);

@@ -39,8 +39,13 @@ export function buildCannon(): Cannon {
   const barrel = new THREE.Group();
   barrel.position.set(0, 1.75, 0);
   const tube = mesh(new THREE.CylinderGeometry(0.62, 0.72, 4.2, 18), mats.red); tube.rotation.x = Math.PI / 2; tube.position.z = -1.2; barrel.add(tube);
-  const breech = mesh(new THREE.SphereGeometry(0.76, 14, 10), mats.red); breech.position.z = 0.9; barrel.add(breech);
-  const knob = mesh(new THREE.SphereGeometry(0.22, 8, 6), mats.gold); knob.position.z = 1.7; barrel.add(knob);
+  // the breech is its own part: packing the powder pushes it back
+  const breech = new THREE.Group();
+  const breechBall = mesh(new THREE.SphereGeometry(0.76, 14, 10), mats.red); breech.add(breechBall);
+  const knob = mesh(new THREE.SphereGeometry(0.22, 8, 6), mats.gold); knob.position.z = 0.8; breech.add(knob);
+  const collar = mesh(new THREE.TorusGeometry(0.72, 0.08, 8, 20), mats.gold); collar.position.z = -0.35; breech.add(collar);
+  breech.position.z = 0.9;
+  barrel.add(breech);
   const mouth = mesh(new THREE.TorusGeometry(0.64, 0.1, 8, 20), mats.gold); mouth.position.z = -3.3; barrel.add(mouth);
   const bore = mesh(new THREE.CircleGeometry(0.58, 18), mats.dark); bore.position.z = -3.31; bore.rotation.y = Math.PI; barrel.add(bore);
   for (const z of [-2.2, -0.6, 0.5]) { const band = mesh(new THREE.TorusGeometry(0.7, 0.07, 8, 20), mats.gold); band.position.z = z; barrel.add(band); }
@@ -66,9 +71,10 @@ export function buildCannon(): Cannon {
     update(dt, t) {
       recoil = Math.max(0, recoil - dt * 2.2);
       flashT = Math.max(0, flashT - dt * 5);
-      const shake = charge > 0.05 ? Math.sin(t * 40) * 0.012 * charge : 0;
-      barrel.rotation.x = baseElev + charge * 0.45 + shake + recoil * 0.12;
+      void t;
+      barrel.rotation.x = baseElev + charge * 0.45 + recoil * 0.12;
       barrel.position.z = recoil * 0.6;
+      breech.position.z = 0.9 + charge * 0.9;
       group.position.z = 0.6 + recoil * 0.25;
       (mats.flash as THREE.MeshBasicMaterial).opacity = flashT * 0.9;
       flash.scale.setScalar(0.6 + (1 - flashT) * 1.4);

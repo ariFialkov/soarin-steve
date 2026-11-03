@@ -111,21 +111,37 @@ export function buildFlightPlan(opts: {
 
   if (L < FUMBLE_L) return buildFumblePlan(rng, L, opts.power, unitsPerMetre);
 
-  // How the flight ends. Something that stops him dead keeps some of his speed right to the end.
+  // How the flight ends. He always arrives with real speed: a sprawl ending then tumbles along
+  // the ground, decelerating hard, for exactly the distance that speed carries; a dumpster or
+  // hay truck stops him dead.
   const endRoll = rng.next();
   const ending: Ending = endRoll < 0.68 ? 'sprawl' : endRoll < 0.86 ? 'dumpster' : 'hay';
-  const vEndFrac = ending === 'sprawl' ? 0 : rng.range(0.22, 0.4);
+  const vEndFrac = ending === 'sprawl' ? rng.range(0.3, 0.48) : rng.range(0.22, 0.4);
+  const GROUND_DECEL = 15;   // world units / s² while tumbling on the pavement
 
-  // Launch speed from the pull (visual flavour). Duration follows from it so
-  // that a plain linear decay would stop exactly at L.
+  // Launch speed from the pull (visual flavour), nudged so the plan is never the degenerate
+  // straight decay. The end speed is a fraction of it; the ground tumble distance follows.
   const vMax = 75;
-  let v0 = (0.45 + 0.55 * opts.power) * vMax;
-  let T = (2 * L) / v0;
+  let v0 = (0.45 + 0.55 * opts.power) * vMax * (1 + rng.range(-0.22, 0.3));
+  let vLand = ending === 'sprawl' ? vEndFrac * v0 : 0;
+  let dSkid = ending === 'sprawl' ? Math.min(L * 0.45, (vLand * vLand) / (2 * GROUND_DECEL)) : 0;
+  let L_air = L - dSkid;
+  // the air phase decays linearly from v0 to the end speed, so its duration is set by the mean speed
+  const vEnd0 = vEndFrac * v0;
+  let T = (2 * L_air) / (v0 + vEnd0);
   const tMin = 4, tMax = 58;
-  if (T < tMin) { T = tMin; v0 = (2 * L) / T; }
-  if (T > tMax) { T = tMax; v0 = (2 * L) / T; }
-  // Nudge the launch speed so the plan is never the degenerate straight decay.
-  v0 *= 1 + rng.range(-0.22, 0.3);
+  if (T < tMin || T > tMax) {
+    T = Math.max(tMin, Math.min(tMax, T));
+    // keep the end-speed ratio and solve the launch speed for the clamped duration
+    v0 = (2 * L) / (T * (1 + vEndFrac));
+    vLand = ending === 'sprawl' ? vEndFrac * v0 : 0;
+    dSkid = ending === 'sprawl' ? Math.min(L * 0.45, (vLand * vLand) / (2 * GROUND_DECEL)) : 0;
+    L_air = L - dSkid;
+    T = (2 * L_air) / (v0 + vEndFrac * v0);
+  }
+  // a little mismatch between duration and mean speed is what the events exist to explain
+  T = Math.max(tMin, Math.min(tMax, T * (1 + rng.range(-0.1, 0.14))));
+  const tSkid = vLand / GROUND_DECEL;
 
   // How many events? roughly one per 4 seconds, 1..9.
   const n = Math.max(1, Math.min(9, Math.round(T / 4.5 + rng.range(-0.5, 0.8))));
@@ -156,7 +172,7 @@ export function buildFlightPlan(opts: {
     const vEnd = vEndFrac * v0;
     let acc = 0;
     for (let i = 0; i < n; i++) if (i !== solveIdx) acc += deltas[i] * (T / 2 - times[i]);
-    deltas[solveIdx] = (L - ((v0 + vEnd) * T) / 2 - acc) / (T / 2 - times[solveIdx]);
+    deltas[solveIdx] = (L_air - ((v0 + vEnd) * T) / 2 - acc) / (T / 2 - times[solveIdx]);
     const sum = deltas.reduce((a, b) => a + b, 0);
     const kk = (v0 + sum - vEnd) / T;
     if (kk <= 0) continue;
@@ -185,14 +201,18 @@ export function buildFlightPlan(opts: {
   }
 
   let vEndFinal = vEndFrac * v0;
+  let skidT = ending === 'sprawl' ? tSkid : 0, skidD = ending === 'sprawl' ? dSkid : 0;
   if (!ok) {
-    // Fallback: no events, pure linear decay to a sprawl. Still ends exactly at L.
+    // Fallback: no events, linear decay to the touchdown speed, then the skid. Still ends exactly at L.
     events = [];
-    v0 = (2 * L) / T;
-    k = v0 / T;
-    vEndFinal = 0;
+    v0 = (2 * L_air) / T - vEndFinal;
+    if (v0 < 5) { v0 = (2 * L) / T; vEndFinal = 0; skidT = 0; skidD = 0; }
+    k = (v0 - vEndFinal) / T;
   }
-  const endingFinal: Ending = ok ? ending : 'sprawl';
+  const endingFinal: Ending = ok ? ending : (skidT > 0 ? 'sprawl' : 'sprawl');
+  const T_air = T;
+  const L_airFinal = L - skidD;
+  T += skidT;
 
   // Sample s(t), v(t)
   const dt = 1 / 60;
@@ -206,11 +226,28 @@ export function buildFlightPlan(opts: {
     while (ei < events.length && events[ei].t <= t) { v += events[ei].delta; events[ei].s = s; ei++; }
     if (t >= T) { v = 0; s = L; }
     sArr[i] = s; vArr[i] = v;
-    v = Math.max(vEndFinal, v - k * dt);
-    s += v * dt;
-    if (s > L) s = L;
+    if (t < T_air) {
+      v = Math.max(vEndFinal, v - k * dt);
+      s += v * dt;
+      if (s > L_airFinal) s = L_airFinal;
+    } else {
+      // on the ground: hard deceleration, the skid distance was budgeted into L
+      v = Math.max(0, v - GROUND_DECEL * dt);
+      s += v * dt;
+      if (s > L) s = L;
+    }
   }
   while (ei < events.length) { events[ei].s = L; ei++; }
+  // tidy the tail so the tumble ends exactly on the line
+  if (skidD > 0) {
+    const iAir = Math.min(N - 1, Math.round(T_air / dt));
+    const sAir = sArr[iAir];
+    for (let i = iAir; i < N; i++) {
+      const q = Math.min(1, (i * dt - T_air) / Math.max(1e-6, T - T_air));
+      sArr[i] = sAir + (L - sAir) * (1 - (1 - q) * (1 - q));
+    }
+  }
+  for (let i = 1; i < N; i++) sArr[i] = Math.min(L, Math.max(sArr[i - 1], sArr[i]));
   sArr[N - 1] = L; vArr[N - 1] = 0;
 
   // Height profile: one clean ballistic parabola from the muzzle over the apex to the touchdown.
@@ -218,7 +255,7 @@ export function buildFlightPlan(opts: {
   // dive to the pad and bounce. Everything is relative to the ground under the route.
   const h0 = LAUNCH_H + 3.6;
   const peak = 2 + (8 + 16 * opts.angle) * Math.min(1, L / 150) + Math.min(40, L / 32);
-  const landT = endingFinal === 'sprawl' ? Math.max(T * 0.86, T - 1.8) : T;
+  const landT = endingFinal === 'sprawl' ? T_air : T;
   const groundH = endingFinal === 'dumpster' ? 1.6 : endingFinal === 'hay' ? 2.6 : 0.3;
   const styleLift = opts.style === 'swoop' ? 1.2 : opts.style === 'flutter' ? 0.85 : 1;
   // parabola h(t) = h0 + b t - q² t² with apex h0 + peak·styleLift and h(landT) = groundH

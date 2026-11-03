@@ -769,7 +769,8 @@ export function buildMacroTile(B: Batches, ctx: CityCtx, I: number, J: number, q
       // ---- base ground under the whole tile, then the streets on its west and north sides
       const base = b.district === 'suburb' || b.district === 'park' ? PAL.grass : b.district === 'industrial' ? '#b3aea4' : b.district === 'oldtown' ? PAL.pavers : PAL.sidewalk;
       B.solid.addRaw(terrainQuad(b.tile.x0, b.tile.x1, b.tile.z0, b.tile.z1, hAt, -0.02, 3, 3), base);
-      B.solid.addRaw(terrainQuad(b.tile.x0 - b.wW, b.tile.x0 + b.wW, b.tile.z0, b.tile.z1, hAt, LAYER.STREET, 1, 6), PAL.asphalt);
+      // west street: an ordinary street is asphalt; the boulevard corridor is pavement, its winding asphalt ribbon is drawn by the world
+      B.solid.addRaw(terrainQuad(b.tile.x0 - b.wW, b.tile.x0 + b.wW, b.tile.z0, b.tile.z1, hAt, b.wW === BOULEVARD_KERB ? -0.04 : LAYER.STREET, b.wW === BOULEVARD_KERB ? 4 : 1, 6), b.wW === BOULEVARD_KERB ? PAL.sidewalk2 : PAL.asphalt);
       B.solid.addRaw(terrainQuad(b.tile.x0, b.tile.x1, b.tile.z1 - b.wN, b.tile.z1 + b.wN, hAt, LAYER.STREET, 6, 1), PAL.asphalt);
       // lane dashes on ordinary streets
       if (b.wW === STREET_HALF) for (let z = b.tile.z1 - 2; z > b.tile.z0; z -= 5) B.solid.add(PLANE, PAL.laneWhite, b.tile.x0, hAt(b.tile.x0, z) + LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
@@ -779,17 +780,13 @@ export function buildMacroTile(B: Batches, ctx: CityCtx, I: number, J: number, q
       const r = b.rect;
       B.solid.box(PAL.sidewalk, (r.x0 + r.x1) / 2, b.e - 4, (r.z0 + r.z1) / 2, r.x1 - r.x0, 8.3, r.z1 - r.z0);
       const walks: Rect[] = [];
-      if (b.wW === BOULEVARD_KERB) walks.push({ x0: b.tile.x0 + BOULEVARD_HALF, x1: r.x0, z0: r.z0, z1: r.z1 });
-      if (b.wE === BOULEVARD_KERB) walks.push({ x0: r.x1, x1: b.tile.x1 - BOULEVARD_HALF, z0: r.z0, z1: r.z1 });
-      if (b.wN === BOULEVARD_KERB) walks.push({ x0: b.tile.x0 + (b.wW === BOULEVARD_KERB ? BOULEVARD_HALF : b.wW), x1: b.tile.x1 - (b.wE === BOULEVARD_KERB ? BOULEVARD_HALF : b.wE), z0: r.z1, z1: b.tile.z1 - BOULEVARD_HALF });
-      if (b.wS === BOULEVARD_KERB) walks.push({ x0: b.tile.x0 + (b.wW === BOULEVARD_KERB ? BOULEVARD_HALF : b.wW), x1: b.tile.x1 - (b.wE === BOULEVARD_KERB ? BOULEVARD_HALF : b.wE), z0: b.tile.z0 + BOULEVARD_HALF, z1: r.z0 });
-      for (const w of walks) B.solid.box(PAL.sidewalk2, (w.x0 + w.x1) / 2, b.e - 4, (w.z0 + w.z1) / 2, w.x1 - w.x0, 8.3, w.z1 - w.z0);
 
       // ---- the block itself, lifted onto its elevation
       setOffset(B, b.e);
       const lot = inset(r, GRID.SIDEWALK);
       const landmark = ctx.landmarkAt(ix, jz);
-      if (ctx.route.isPlaza(ix, jz)) plazaBlock(B, rng, lot);
+      const besideBoulevard = b.wW === BOULEVARD_KERB || b.wE === BOULEVARD_KERB;
+      if (besideBoulevard && jz > 4 && hash2(ix, jz, 99) < 0.1) plazaBlock(B, rng, lot);
       else if (landmark) landmarkAt(B, rng, landmark, lot, animated, mkMat);
       else {
         switch (b.district) {

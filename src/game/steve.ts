@@ -79,9 +79,9 @@ class ClothCape {
     // local layout (torso space): hangs from the shoulders, widening toward the hem
     for (let j = 0; j < this.H; j++) for (let i = 0; i < this.W; i++) {
       const v = j / (this.H - 1);
-      const half = 0.2 + 0.26 * v;
+      const half = 0.22 + 0.3 * v;
       const x = (i / (this.W - 1) - 0.5) * 2 * half;
-      this.pinsLocal.push(new THREE.Vector3(x, 0.62 - v * 0.95, 0.2 + v * 0.1));
+      this.pinsLocal.push(new THREE.Vector3(x, 0.62 - v * 1.15, 0.2 + v * 0.1));
     }
     const idx = (i: number, j: number) => j * this.W + i;
     const link = (a: number, b: number, k: number) => {
@@ -185,7 +185,7 @@ export function buildSteve(suit: SuitDef): SteveRig {
     skin: new THREE.MeshLambertMaterial({ color: suit.skin }),
     dark: new THREE.MeshLambertMaterial({ color: '#2b2b2b' }),
     glass: new THREE.MeshLambertMaterial({ color: '#9fd8ff', transparent: true, opacity: 0.8 }),
-    cape: new THREE.MeshLambertMaterial({ color: suit.accent, side: THREE.DoubleSide }),
+    cape: new THREE.MeshLambertMaterial({ color: capeColour(suit), side: THREE.DoubleSide }),
     rocket: new THREE.MeshLambertMaterial({ color: '#d8392b' }),
     stick: new THREE.MeshLambertMaterial({ color: '#c9a86a' }),
     tip: new THREE.MeshLambertMaterial({ color: '#f2c14e' }),
@@ -244,7 +244,7 @@ export function buildSteve(suit: SuitDef): SteveRig {
   // cape: a small cloth simulation pinned at the shoulders (added to the group, simulated in world space)
   let cape: THREE.Mesh | null = null;
   let cloth: ClothCape | null = null;
-  if (suit.cape) {
+  {
     cloth = new ClothCape(torso, group, mats.cape, 1.45);
     cape = cloth.mesh;
     group.add(cape);
@@ -323,6 +323,14 @@ export function buildSteve(suit: SuitDef): SteveRig {
   };
   rig.snapPose('stand');
   return rig;
+}
+
+/** A cape colour that reads against the sky: the suit's main colour unless it is very pale. */
+function capeColour(suit: SuitDef): string {
+  const lum = (hex: string) => { const c = new THREE.Color(hex); return 0.3 * c.r + 0.59 * c.g + 0.11 * c.b; };
+  if (lum(suit.primary) < 0.8) return suit.primary;
+  if (lum(suit.secondary) < 0.8) return suit.secondary;
+  return suit.accent;
 }
 
 function emblemMesh(suit: SuitDef, mat: THREE.Material): THREE.Mesh | null {

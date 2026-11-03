@@ -104,7 +104,12 @@ export function stripQuad(ax: number, az: number, bx: number, bz: number, nxA: n
   const a1 = p(ax + nxA * (offsetN + halfW), az + nzA * (offsetN + halfW));
   const b0 = p(bx + nxB * (offsetN - halfW), bz + nzB * (offsetN - halfW));
   const b1 = p(bx + nxB * (offsetN + halfW), bz + nzB * (offsetN + halfW));
-  const verts = new Float32Array([...a0, ...b0, ...b1, ...a0, ...b1, ...a1]);
+  // wind the triangles so the face points up whichever way the strip runs
+  const ux = b0[0] - a0[0], uz = b0[2] - a0[2], vx = b1[0] - a0[0], vz = b1[2] - a0[2];
+  const up = (uz * vx - ux * vz) > 0;
+  const verts = up
+    ? new Float32Array([...a0, ...b0, ...b1, ...a0, ...b1, ...a1])
+    : new Float32Array([...a0, ...b1, ...b0, ...a0, ...a1, ...b1]);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(verts, 3));
   g.computeVertexNormals();

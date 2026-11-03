@@ -11,7 +11,7 @@ export const PX = 36;   // block pitch across (x)
 export const PZ = 32;   // block pitch along (z)
 export const FILLET = 11;
 export const BOULEVARD_HALF = 7;     // asphalt half width of route streets
-export const BOULEVARD_KERB = 9.5;   // sidewalk outer edge of route streets
+export const BOULEVARD_KERB = 13;    // corridor half width of the route street (the asphalt ribbon winds inside it)
 export const STREET_HALF = 4;        // half width of ordinary streets
 
 export interface RouteSample {
@@ -41,14 +41,31 @@ export class Route {
   /** intersections the route turns at */
   readonly corners: Node[] = [];
 
+  /** Lateral meander of the boulevard's asphalt ribbon beneath the (straight) flight line. */
+  private meander: { a: number; f: number; ph: number }[] = [];
+
   constructor(seed: string) {
     this.rng = new Rng(seed + ':route');
-    // straight start: the avenue runs north from the cannon for a few blocks (and behind it)
+    // the flight always runs straight north from the cannon; the road below it winds
     this.boulevards.add('v:0:-1'); this.boulevards.add('v:0:-2');
     this.nodes.push({ ix: 0, jz: 0 });
-    const first = 5 + this.rng.int(0, 2);
-    this.addLeg('N', first);
+    this.addLeg('N', 12);
+    const r = this.rng;
+    this.meander = [
+      { a: r.range(2.6, 3.6), f: (Math.PI * 2) / r.range(150, 210), ph: r.range(0, 6.28) },
+      { a: r.range(1.2, 2.0), f: (Math.PI * 2) / r.range(70, 110), ph: r.range(0, 6.28) },
+    ];
   }
+
+  /** Sideways offset of the road ribbon at route distance s (zero near the cannon). */
+  roadOffset(s: number): number {
+    const ramp = s < 150 ? 0 : s > 320 ? 1 : (() => { const q = (s - 150) / 170; return q * q * (3 - 2 * q); })();
+    let x = 0;
+    for (const m of this.meander) x += Math.sin(s * m.f + m.ph) * m.a;
+    return x * ramp;
+  }
+  /** Slope of the road offset, for orienting markings along the ribbon. */
+  roadSlope(s: number): number { return (this.roadOffset(s + 0.5) - this.roadOffset(s - 0.5)); }
 
   private addLeg(dir: 'N' | 'E' | 'W', blocks: number): void {
     const last = this.nodes[this.nodes.length - 1];
@@ -79,17 +96,11 @@ export class Route {
     return null;
   }
 
-  /** Extend the route until it is at least `sMax` long. */
+  /** Extend the route until it is at least `sMax` long (always straight on). */
   ensure(sMax: number): void {
     while (this.total < sMax + 400) {
-      const rng = this.rng;
-      let next: 'N' | 'E' | 'W';
-      if (this.dir === 'N') {
-        this.legsSinceTurn++;
-        next = rng.chance(0.55) ? (rng.chance(0.5) ? 'E' : 'W') : 'N';
-      } else next = 'N';
-      const blocks = next === 'N' ? rng.int(3, 7) : rng.int(1, 4);
-      this.addLeg(next, blocks);
+      this.legsSinceTurn++;
+      this.addLeg('N', 8);
     }
   }
 
