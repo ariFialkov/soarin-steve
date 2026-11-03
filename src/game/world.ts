@@ -7,18 +7,20 @@ import * as THREE from 'three';
 import { Rng } from '../core/rng';
 import type { FlightPlan } from './flightPlan';
 import type { ParticleSystem } from './particles';
-import { GeoBatch, PLANE, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture, stripQuad } from './geobatch';
+import { GeoBatch, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture, stripQuad } from './geobatch';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MACRO, buildFarMacroTile, buildMacroTile, makeCityCtx, type AnimatedObject, type Batches, type BlockInfo, type CityCtx, type District } from './city';
 import { Route, PX, PZ, STREET_HALF, type RouteSample } from './route';
 import { Terrain } from './terrain';
 import { DECOY_KINDS, STREET_DECOY_KINDS, balloonEnvelope, makeEventObject, type EventObject } from './events';
 
 const MX = MACRO * PX, MZ = MACRO * PZ;
-const NEAR_R = 2;      // macro tiles each side of the route samples, full detail
-const FAR_R = 4;       // cheap massing beyond that
+const NEAR_RI = 1, NEAR_RJ = 1;   // macro tiles around each route sample in full detail (across, along)
+const FAR_RI = 3, FAR_RJ = 2;     // cheap massing beyond that
 const AHEAD = 520;     // route distance covered by the window
 const BEHIND = 90;
-const TRACK_STEP = 10;
+const TRACK_STEP = 40;    // one baked piece per 40 units
+const MARK_STEP = 10;     // a cash marker every 10 units
 
 export interface WorldParams {
   seed: string;
@@ -38,7 +40,7 @@ interface Tile {
 interface TrackPiece {
   group: THREE.Group;
   disposables: { dispose(): void }[];
-  label: { s: number; mat: THREE.MeshBasicMaterial; fill: string; stroke: string } | null;
+  labels: { s: number; mat: THREE.MeshBasicMaterial; fill: string; stroke: string }[];
 }
 
 function fmtCash(v: number): string {
@@ -154,13 +156,14 @@ export class World {
   setCashPerUnit(cashPerUnit: number): void {
     this.params.cashPerUnit = cashPerUnit;
     for (const [, p] of this.track) {
-      if (!p.label) continue;
-      const old = p.label.mat.map;
-      const { tex } = makeLabel(fmtCash(p.label.s * cashPerUnit), p.label.fill, p.label.stroke);
-      p.label.mat.map = tex;
-      p.label.mat.needsUpdate = true;
-      old?.dispose();
-      p.disposables.push(tex);
+      for (const l of p.labels) {
+        const old = l.mat.map;
+        const { tex } = makeLabel(fmtCash(l.s * cashPerUnit), l.fill, l.stroke);
+        l.mat.map = tex;
+        l.mat.needsUpdate = true;
+        old?.dispose();
+        p.disposables.push(tex);
+      }
     }
   }
 
@@ -173,9 +176,9 @@ export class World {
     for (let q = s - BEHIND; q <= s + AHEAD; q += 24) {
       const r = this.route.at(Math.max(0, q), this.sample);
       const I = Math.floor(r.x / MX), J = Math.floor(-r.z / MZ);
-      for (let di = -FAR_R; di <= FAR_R; di++) for (let dj = -FAR_R; dj <= FAR_R; dj++) {
+      for (let di = -FAR_RI; di <= FAR_RI; di++) for (let dj = -FAR_RJ; dj <= FAR_RJ; dj++) {
         const key = `${I + di}:${J + dj}`;
-        if (Math.abs(di) <= NEAR_R && Math.abs(dj) <= NEAR_R) { near.add(key); far.delete(key); }
+        if (Math.abs(di) <= NEAR_RI && Math.abs(dj) <= NEAR_RJ) { near.add(key); far.delete(key); }
         else if (!near.has(key)) far.add(key);
       }
     }
@@ -225,9 +228,13 @@ export class World {
       const res = buildMacroTile(B, this.city, I, J, this.params.quality, this.mkMat);
       animated.push(...res.animated);
       const rng = new Rng(`${this.params.seed}:tile:${key}`);
-      this.addTraffic(animated, rng, res.blocks);
-      this.addAmbient(animated, rng, I, J, res.blocks);
-      this.addDecoys(group, decoys, rng, I, J, res.blocks);
+      // life only where the camera can see it: the two tile columns straddling the flight line
+      const central = I === -1 || I === 0;
+      this.addTraffic(animated, rng, res.blocks, central ? 1 : 0.4);
+      if (central) {
+        this.addAmbient(animated, rng, I, J, res.blocks);
+        this.addDecoys(group, decoys, rng, I, J, res.blocks);
+      }
     }
     const solid = B.solid.build(this.mats.solid);
     const facade = B.facade.build(this.mats.facade);
@@ -245,14 +252,14 @@ export class World {
     const disposables: { dispose(): void }[] = [];
     const B = new GeoBatch();
     const hAt = (x: number, z: number) => this.terrain.at(x, z);
-    const mid = this.route.at(s0 + 5, this.sample);
-    const onBridge = this.city.isRiverRow(Math.floor(-mid.z / PZ)) && Math.abs(mid.tz) > 0.5;
-    const st = onBridge ? TRACK_STYLE.bridge : TRACK_STYLE.asphalt;
-    // the road ribbon winds beneath the straight flight line: asphalt, kerbs, lighter track, lane lines
-    const sub = 5;
     const ro = (q: number) => this.route.roadOffset(q);
+    const labels: TrackPiece['labels'] = [];
+    const sub = 20;  // 2-unit sub-segments so the ribbon follows its bends
     for (let i = 0; i < sub; i++) {
       const qa = s0 + (i / sub) * TRACK_STEP, qb = s0 + ((i + 1) / sub) * TRACK_STEP;
+      const mid = this.route.at(qa + 1, this.sample);
+      const onBridge = this.city.isRiverRow(Math.floor(-mid.z / PZ));
+      const st = onBridge ? TRACK_STYLE.bridge : TRACK_STYLE.asphalt;
       const a = this.route.at(qa, this.sample);
       const b = this.route.at(qb, this.sample2);
       const oa = ro(qa), ob = ro(qb);
@@ -267,53 +274,57 @@ export class World {
         B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.15, 3.5), st.line);
         B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.15, -3.5), st.line);
       }
+      // a lamp every 20 units, alternating sides
+      if (i % 10 === 5 && !onBridge) {
+        const side = ((qa / 20) | 0) % 2 === 0 ? 1 : -1;
+        const lx = a.x + a.nx * (oa + side * 8.6), lz = a.z + a.nz * (oa + side * 8.6);
+        const ly = hAt(lx, lz);
+        B.add(CYL_LO, '#4b515b', lx, ly + 3, lz, 0, 0, 0, 0.16, 6, 0.16);
+        B.add(BOX, '#4b515b', lx - a.nx * side * 0.6, ly + 6, lz - a.nz * side * 0.6, 0, a.heading, 0, 1.3, 0.14, 0.14);
+        B.add(BOX, '#fff3b0', lx - a.nx * side * 1.1, ly + 5.85, lz - a.nz * side * 1.1, 0, a.heading, 0, 0.6, 0.3, 0.5);
+      }
     }
-    // lamps along the ribbon edges every 20 units, alternating sides
-    if (k % 2 === 0 && !onBridge) {
-      const r = this.route.at(s0 + 5, this.sample);
-      const o = ro(s0 + 5);
-      const side = (k / 2) % 2 === 0 ? 1 : -1;
-      const lx = r.x + r.nx * (o + side * 8.6), lz = r.z + r.nz * (o + side * 8.6);
-      const ly = hAt(lx, lz);
-      B.add(CYL_LO, '#4b515b', lx, ly + 3, lz, 0, 0, 0, 0.16, 6, 0.16);
-      B.add(BOX, '#4b515b', lx - r.nx * side * 0.6, ly + 6, lz - r.nz * side * 0.6, 0, r.heading, 0, 1.3, 0.14, 0.14);
-      B.add(BOX, '#fff3b0', lx - r.nx * side * 1.1, ly + 5.85, lz - r.nz * side * 1.1, 0, r.heading, 0, 0.6, 0.3, 0.5);
-    }
-    let label: TrackPiece['label'] = null;
-    if (k > 0) {
-      const r0 = this.route.at(s0, this.sample);
-      const o0 = ro(s0);
-      const r = { ...r0, x: r0.x + r0.nx * o0, z: r0.z + r0.nz * o0 };
-      // cross marker
-      const ax = r.x - r.tx * 0.18, az = r.z - r.tz * 0.18, bx = r.x + r.tx * 0.18, bz = r.z + r.tz * 0.18;
-      B.addRaw(stripQuad(ax, az, bx, bz, r.nx, r.nz, r.nx, r.nz, 6, hAt, 0.17), st.cross);
-      const { tex, aspect } = makeLabel(fmtCash(s0 * this.params.cashPerUnit), st.label, st.stroke);
+    // markers with a cash label either side, each marker's two labels baked into one mesh
+    for (let m = 0; m < TRACK_STEP / MARK_STEP; m++) {
+      const sm = s0 + m * MARK_STEP;
+      if (sm <= 0) continue;
+      const r0 = this.route.at(sm, this.sample);
+      const o0 = ro(sm);
+      const rx = r0.x + r0.nx * o0, rz = r0.z + r0.nz * o0;
+      const onBridge = this.city.isRiverRow(Math.floor(-rz / PZ));
+      const st = onBridge ? TRACK_STYLE.bridge : TRACK_STYLE.asphalt;
+      const ax = rx - r0.tx * 0.18, az = rz - r0.tz * 0.18, bx = rx + r0.tx * 0.18, bz = rz + r0.tz * 0.18;
+      B.addRaw(stripQuad(ax, az, bx, bz, r0.nx, r0.nz, r0.nx, r0.nz, 6, hAt, 0.17), st.cross);
+      const { tex, aspect } = makeLabel(fmtCash(sm * this.params.cashPerUnit), st.label, st.stroke);
       disposables.push(tex);
       const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
       disposables.push(mat);
-      label = { s: s0, mat, fill: st.label, stroke: st.stroke };
+      labels.push({ s: sm, mat, fill: st.label, stroke: st.stroke });
+      const hgt = 2.0, w = hgt * aspect;
+      const parts: THREE.BufferGeometry[] = [];
       for (const side of [-1, 1]) {
-        const m = new THREE.Mesh(PLANE, mat);
-        const hgt = 2.0;
-        m.scale.set(hgt * aspect, hgt, 1);
-        const px = r.x + r.nx * side * 3.5 - r.tx * 1.3, pz = r.z + r.nz * side * 3.5 - r.tz * 1.3;
-        m.position.set(px, hAt(px, pz) + 0.2, pz);
-        m.rotation.set(-Math.PI / 2, 0, 0);
-        m.rotateZ(r.heading);
-        group.add(m);
+        const g = new THREE.PlaneGeometry(w, hgt);
+        g.rotateX(-Math.PI / 2);
+        g.rotateY(r0.heading);
+        const px = rx + r0.nx * side * 3.5 - r0.tx * 1.3, pz = rz + r0.nz * side * 3.5 - r0.tz * 1.3;
+        g.translate(px, hAt(px, pz) + 0.2, pz);
+        parts.push(g);
       }
+      const merged = mergeGeometries(parts, false);
+      for (const g of parts) g.dispose();
+      if (merged) { const lm = new THREE.Mesh(merged, mat); lm.matrixAutoUpdate = false; group.add(lm); disposables.push(merged); }
     }
     const mesh = B.build(this.mats.solid);
     if (mesh) { group.add(mesh); disposables.push(mesh.geometry); }
     this.group.add(group);
-    this.track.set(k, { group, disposables, label });
+    this.track.set(k, { group, disposables, labels });
   }
 
   // ------------------------------------------------------------------ traffic
-  private addTraffic(animated: AnimatedObject[], rng: Rng, blocks: BlockInfo[]): void {
+  private addTraffic(animated: AnimatedObject[], rng: Rng, blocks: BlockInfo[], density = 1): void {
     const mk = this.mkMat;
     const terrain = this.terrain;
-    const n = this.params.quality === 'high' ? rng.int(5, 8) : rng.int(2, 4);
+    const n = Math.round((this.params.quality === 'high' ? rng.int(3, 5) : rng.int(1, 3)) * density);
     for (let i = 0; i < n; i++) {
       const b = rng.pick(blocks);
       if (b.district === 'river') continue;
@@ -366,7 +377,7 @@ export class World {
   // ------------------------------------------------------------------ decoys
   private addDecoys(group: THREE.Group, decoys: EventObject[], rng: Rng, I: number, J: number, blocks: BlockInfo[]): void {
     const cx = (I + 0.5) * MX, cz = -(J + 0.5) * MZ;
-    const n = this.params.quality === 'high' ? rng.int(1, 3) : rng.int(0, 1);
+    const n = rng.chance(this.params.quality === 'high' ? 0.6 : 0.3) ? 1 : 0;
     for (let d = 0; d < n; d++) {
       const kind = rng.pick(DECOY_KINDS);
       const grounded = kind === 'crane' || kind === 'billboard' || kind === 'pigeons' || kind === 'thermal' || kind === 'vent';
@@ -380,7 +391,7 @@ export class World {
       group.add(eo.group);
     }
     // street-level filler on ordinary streets
-    if (rng.chance(0.7)) {
+    if (rng.chance(0.3)) {
       const b = rng.pick(blocks);
       if (b.district !== 'river' && b.wN === STREET_HALF) {
         const kind = rng.pick(STREET_DECOY_KINDS);
