@@ -44,7 +44,7 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: numb
 const goreMat = new THREE.MeshLambertMaterial({ vertexColors: true });
 
 /** A balloon envelope as a single sphere with vertex-coloured gores (no overlapping shells). */
-export function balloonEnvelope(colors: string[], gores = 8): THREE.Mesh {
+export function balloonEnvelope(colors: string[], gores = 8, material: THREE.Material = goreMat): THREE.Mesh {
   const geo = new THREE.SphereGeometry(0.5, 24, 12);
   const pos = geo.attributes.position;
   const cols = new Float32Array(pos.count * 3);
@@ -56,15 +56,15 @@ export function balloonEnvelope(colors: string[], gores = 8): THREE.Mesh {
     cols[i * 3] = c.r; cols[i * 3 + 1] = c.g; cols[i * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-  const m = new THREE.Mesh(geo, goreMat);
+  const m = new THREE.Mesh(geo, material);
   m.scale.set(5.6, 6.6, 5.6);
   return m;
 }
 
 /** A hot-air balloon: envelope, basket, ropes. Returns the group (origin at the basket). */
-function balloon(mk: (c: string) => THREE.Material, colors: string[]): THREE.Group {
+function balloon(mk: (c: string) => THREE.Material, colors: string[], gore?: THREE.Material): THREE.Group {
   const g = new THREE.Group();
-  const env = balloonEnvelope(colors);
+  const env = balloonEnvelope(colors, 8, gore);
   env.position.y = 7.5;
   const neck = mesh(CONE, mk(colors[0]), 0, 3.6, 0, 3.2, 2.2, 3.2, Math.PI, 0, 0);
   const basket = mesh(BOX, mk('#9a6b3c'), 0, 0.6, 0, 1.6, 1.2, 1.6);
@@ -106,12 +106,19 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
   const z = 0;
   const flyIn = !decoy && FLY_IN.has(e.kind);
   const base = { x: 0, y: 0, z: 0, nx: 1, nz: 0 };
+  /** plan time until this object's moment (+ before, − after); decoys keep their own clock */
+  let ttt = 30;
+  let fade = 0;
   const mats: THREE.Material[] = [];
   const mk = (c: string, extra: Partial<THREE.MeshLambertMaterialParameters> = {}): THREE.Material => {
     const m = new THREE.MeshLambertMaterial({ color: c, ...extra });
+    m.userData.wasTransparent = !!extra.transparent;
+    m.userData.baseOpacity = extra.opacity ?? 1;
+    m.transparent = true; m.opacity = 0;
     mats.push(m);
     return m;
   };
+  const goreFor = () => { const m = new THREE.MeshLambertMaterial({ vertexColors: true }); m.userData.baseOpacity = 1; m.transparent = true; m.opacity = 0; mats.push(m); return m; };
   let update: (dt: number, elapsed: number) => void = () => {};
   let onTrigger: () => void = () => {};
   const side = e.x >= 0 ? 1 : -1;
@@ -123,11 +130,21 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
       group.rotation.set(0, heading, 0);
       if (flyIn) this.approach(99);
     },
-    update(dt, elapsed) { if (this.triggered) this.age += dt; update(dt, elapsed); },
-    approach(ttt) {
+    update(dt, elapsed) {
+      if (this.triggered) this.age += dt;
+      if (decoy) ttt -= dt;
+      // fade in rather than popping into existence
+      if (fade < 1) {
+        fade = Math.min(1, fade + dt / 1.2);
+        for (const m of mats) { m.transparent = fade < 1 || (m as THREE.MeshLambertMaterial).userData.wasTransparent; m.opacity = fade * ((m as THREE.MeshLambertMaterial).userData.baseOpacity ?? 1); }
+      }
+      update(dt, elapsed);
+    },
+    approach(t) {
+      ttt = t;
       if (!flyIn) return;
       // fully off to the side 2.2 s out, in position 0.3 s before the moment
-      const k = this.triggered ? 0 : Math.min(1, Math.max(0, (ttt - 0.3) / 1.9));
+      const k = this.triggered ? 0 : Math.min(1, Math.max(0, (t - 0.3) / 1.9));
       const ease = k * k * (3 - 2 * k);
       const off = side * 70 * ease;
       group.position.set(base.x + base.nx * off, base.y + 12 * ease, base.z + base.nz * off);
@@ -169,7 +186,7 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
     }
     case 'burner': {
       // hot-air balloon whose burner blast lifts the plane as it passes
-      const b = balloon(mk, ['#f2c14e', '#e2574c', '#ffffff', '#5fb8e6']);
+      const b = balloon(mk, ['#f2c14e', '#e2574c', '#ffffff', '#5fb8e6'], goreFor());
       b.position.set(side * 6, h - 8, 0);
       group.add(b);
       const flame = mesh(CONE, mk('#ffb347', { emissive: '#ff8c00', emissiveIntensity: 0.9 }), 0, 2.8, 0, 0.8, 1.4, 0.8);
@@ -207,24 +224,19 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
       break;
     }
     case 'jetwash': {
-      // an airliner crossing just ahead; its slipstream shoves the plane along
+      // an airliner on a straight, constant-speed crossing timed to pass just ahead of him; its wake shoves him along
       const jet = airliner(mk, '#2b7bb9');
-      const dir = side;
-      jet.position.set(-dir * 160, h + 6, -40);
+      const dir = side, spd = 48;
+      jet.position.set(-dir * 300, h + 6, -10);
       jet.rotation.y = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
       group.add(jet);
-      let x = -dir * 160;
+      let xd = -dir * (60 + Math.abs(e.x) * 200);
       update = (dt) => {
-        const ahead = self.triggered ? 1 : 0;
-        // the airliner cruises across so that it is just past the centre line when the plane arrives
-        x += dir * dt * (self.triggered ? 60 : 36);
-        if (!self.triggered && dir * x > -20) x = -dir * 20;
+        const x = decoy ? (xd += dir * spd * dt) : THREE.MathUtils.clamp(-dir * spd * ttt, -700, 700);
         jet.position.x = x;
-        jet.position.z = -40 + 40 * (self.triggered ? Math.min(1, self.age * 3) : 0);
         if (Math.random() < 0.8) {
-          particles.emit({ pos: V(x - dir * 9, h + 5, jet.position.z + z), vel: V(-dir * 10, 0.5, 2), spread: 1.5, count: 2, life: 1.4, size: 0.7, endSize: 1.6, colors: ['#ffffff', '#eef4f8'], drag: 0.4 });
+          particles.emit({ pos: group.localToWorld(V(x - dir * 9, h + 5, -10)), vel: V(0, 0.5, 0), spread: 1.2, count: 2, life: 1.6, size: 0.7, endSize: 1.8, colors: ['#ffffff', '#eef4f8'], drag: 0.4 });
         }
-        void ahead;
       };
       break;
     }
@@ -290,22 +302,22 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
     }
     case 'hotair': {
       // a drifting hot-air balloon right in the lane
-      const b = balloon(mk, ['#e5679a', '#ffffff', '#7bc96f', '#f2c14e']);
+      const b = balloon(mk, ['#e5679a', '#ffffff', '#7bc96f', '#f2c14e'], goreFor());
       b.position.set(e.x, h - 7.5, 0);
       group.add(b);
-      update = (dt, t) => {
+      update = (_dt, t) => {
         b.position.y = h - 7.5 + Math.sin(t * 0.7) * 0.5;
         b.rotation.z = Math.sin(t * 0.5) * 0.03;
+        b.position.x = e.x + Math.sin(t * 0.12) * 0.8;
         if (self.triggered && self.age < 1) {
           const s = 1 + Math.sin(self.age * Math.PI) * 0.12;
           b.scale.set(s, 1 / s, s);
-          b.position.x += side * dt * 2;
         }
       };
       break;
     }
     case 'propplane': {
-      // a little banner-towing plane crossing the avenue
+      // a little banner-towing plane on a steady crossing, timed to meet him, then flying on
       const p = new THREE.Group();
       const col = mk(side > 0 ? '#e2574c' : '#f2c14e');
       p.add(mesh(CYL, col, 0, 0, 0, 1.3, 5, 1.3, Math.PI / 2, 0, 0));
@@ -319,17 +331,17 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
       banner.scale.set(1, 2.2, 9);
       p.add(mesh(CYL_LO, mk('#444'), 0, 0, 5, 0.05, 6, 0.05, Math.PI / 2, 0, 0));
       p.add(banner);
-      p.position.set(-side * 70, h, 0);
       p.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
       group.add(p);
-      let x = -side * 70;
+      const spd = 20;
+      let xd = -side * (40 + Math.abs(e.x) * 120);
       update = (dt, t) => {
         prop.rotation.z += dt * 40;
-        x += side * dt * (self.triggered ? 28 : 14);
-        if (!self.triggered && side * x > -4) x = -side * 4;
+        const x = decoy ? (xd += side * spd * dt) : THREE.MathUtils.clamp(-side * spd * ttt, -700, 700);
         p.position.x = x;
-        p.position.y = h + Math.sin(t * 1.5) * 0.4;
-        if (self.triggered) p.rotation.z = Math.sin(self.age * 10) * 0.3 * Math.max(0, 1 - self.age);
+        p.position.y = h + Math.sin(t * 1.2) * 0.3;
+        banner.rotation.x = Math.sin(t * 6) * 0.06;
+        if (self.triggered) p.rotation.z = Math.sin(self.age * 10) * 0.25 * Math.max(0, 1 - self.age);
       };
       break;
     }

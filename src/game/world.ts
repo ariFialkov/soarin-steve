@@ -27,6 +27,19 @@ export interface WorldParams {
   quality: 'low' | 'high';
 }
 
+type CarPath =
+  | { kind: 'avenue'; off: number; dir: 1 | -1 }   // along the winding boulevard; dir +1 = ahead
+  | { kind: 'side'; x: number; dir: 1 | -1 }       // a side street parallel to the flight; dir +1 = ahead (−z)
+  | { kind: 'cross'; z: number; dir: 1 | -1 };     // a cross street; dir +1 = +x
+interface Car { g: THREE.Group; path: CarPath; u: number; active: boolean; rot: number; bus: boolean }
+function sameLane(a: CarPath, b: CarPath): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'avenue' && b.kind === 'avenue') return a.off === b.off;
+  if (a.kind === 'side' && b.kind === 'side') return a.x === b.x;
+  if (a.kind === 'cross' && b.kind === 'cross') return a.z === b.z;
+  return false;
+}
+
 interface Tile {
   key: string;
   far: boolean;
@@ -160,7 +173,10 @@ export class World {
     this.city = makeCityCtx(params.seed, this.route, this.terrain);
     this.sky = this.buildSky();
     this.group.add(this.sky);
+    // build the whole look-ahead up front so the first seconds of flight never stall
     this.stream(0, Infinity);
+    this.trafficRng = new Rng(params.seed + ':traffic');
+    this.initTraffic();
   }
 
   get events(): EventObject[] { return this.eventObjects; }
@@ -283,7 +299,6 @@ export class World {
       const rng = new Rng(`${this.params.seed}:tile:${key}`);
       // life only where the camera can see it: the two tile columns straddling the flight line
       const central = I === -1 || I === 0;
-      this.addTraffic(animated, rng, res.blocks, central ? 1 : 0.4);
       if (central) {
         this.addAmbient(animated, rng, I, J, res.blocks);
         this.addDecoys(group, decoys, rng, I, J, res.blocks);
@@ -340,10 +355,10 @@ export class World {
     }
     // the cash lane: one straight lane on the flight line (not the winding road), a faint band,
     // a tick every 10 units and a single number per tick, painted to suit the surface beneath
-    for (let i = 0; i < 4; i++) {
-      const qa = s0 + i * 10, qb = qa + 10;
+    for (let i = 0; i < 20; i++) {
+      const qa = s0 + i * 2, qb = qa + 2;
       const a = this.route.at(qa, this.sample), b = this.route.at(qb, this.sample2);
-      B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 1.9, hAt, 0.16), TRACK_STYLE[this.surfaceAt(qa + 5)].track);
+      B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 1.9, hAt, 0.16), TRACK_STYLE[this.surfaceAt(qa + 1)].track);
     }
     for (let m = 0; m < TRACK_STEP / MARK_STEP; m++) {
       const sm = s0 + m * MARK_STEP;
@@ -358,11 +373,16 @@ export class World {
       disposables.push(mat);
       labels.push({ s: sm, mat, fill: st.label });
       const hgt = 1.45, w = hgt * aspect;
-      const lg = new THREE.PlaneGeometry(w, hgt);
+      // draped over the ground: every vertex sits on the terrain, so the number tilts with the hill
+      // instead of cutting into it, while staying square to the forward axis
+      const lg = new THREE.PlaneGeometry(w, hgt, 10, 3);
       lg.rotateX(-Math.PI / 2);
       lg.rotateY(r0.heading);
       const px = r0.x - r0.tx * 1.0, pz = r0.z - r0.tz * 1.0;
-      lg.translate(px, hAt(px, pz) + 0.2, pz);
+      lg.translate(px, 0, pz);
+      const lp = lg.attributes.position as THREE.BufferAttribute;
+      for (let vi = 0; vi < lp.count; vi++) lp.setY(vi, hAt(lp.getX(vi), lp.getZ(vi)) + 0.22);
+      lg.computeVertexNormals();
       const lm = new THREE.Mesh(lg, mat); lm.matrixAutoUpdate = false; group.add(lm); disposables.push(lg);
     }
     const mesh = B.build(this.mats.solid);
@@ -372,58 +392,149 @@ export class World {
   }
 
   // ------------------------------------------------------------------ traffic
-  private addTraffic(animated: AnimatedObject[], rng: Rng, blocks: BlockInfo[], density = 1): void {
-    const mk = this.mkMat;
-    const terrain = this.terrain;
-    const n = Math.round((this.params.quality === 'high' ? rng.int(3, 5) : rng.int(1, 3)) * density);
-    for (let i = 0; i < n; i++) {
-      const b = rng.pick(blocks);
-      if (b.district === 'river') continue;
-      // drive along the west street (z direction) or the north street (x direction) of this block
-      const alongZ = rng.chance(0.55);
-      const boulevard = alongZ ? b.wW > STREET_HALF : b.wN > STREET_HALF;
-      // no traffic through the launch tower
-      if (alongZ && b.ix === 0 && b.jz <= 0) continue;
-      const dir = rng.sign();
-      const laneOff = (boulevard ? 5.0 : 2.3) * dir;
-      const isBus = boulevard && rng.chance(0.25);
-      const g = new THREE.Group();
-      const col = rng.pick(['#f26b6b', '#5fb8e6', '#f2c14e', '#7bc96f', '#ffffff', '#3b3f47', '#e5679a', '#9a9ea5']);
-      // one merged mesh per vehicle keeps the scene graph small
-      const cb = new GeoBatch();
-      if (isBus) {
-        cb.add(this.carGeo.busBody, rng.pick(['#f2c14e', '#e2574c', '#3f5f8a']), 0, 1.4, 0);
-        cb.add(this.carGeo.busGlass, '#bfe9ff', 0, 1.9, 0);
-        for (const a of [-3, 3]) for (const bb of [-1.1, 1.1]) cb.add(this.carGeo.wheel, '#2b2b2b', bb, 0.45, a, 0, 0, Math.PI / 2, 1.4, 1, 1.4);
+  /**
+   * One traffic system for the whole city. Cars drive real lanes: the winding boulevard (forward
+   * traffic on the right, oncoming on the left) and the side streets; a car that reaches a river
+   * turns onto the riverside road. New cars only ever appear deep in the haze ahead, and cars are
+   * retired once they are behind the camera, so nothing pops in or out in view. Every lane has a
+   * single speed, so cars in a lane never run into each other.
+   */
+  private cars: Car[] = [];
+  private trafficRng!: Rng;
+
+  private makeVehicle(rng: Rng, bus: boolean): THREE.Group {
+    const g = new THREE.Group();
+    const cb = new GeoBatch();
+    if (bus) {
+      cb.add(this.carGeo.busBody, rng.pick(['#f2c14e', '#e2574c', '#3f5f8a']), 0, 1.4, 0);
+      cb.add(this.carGeo.busGlass, '#bfe9ff', 0, 1.9, 0);
+      for (const a of [-3, 3]) for (const bb of [-1.1, 1.1]) cb.add(this.carGeo.wheel, '#2b2b2b', bb, 0.45, a, 0, 0, Math.PI / 2, 1.4, 1, 1.4);
+    } else {
+      cb.add(this.carGeo.body, rng.pick(['#f26b6b', '#5fb8e6', '#f2c14e', '#7bc96f', '#ffffff', '#3b3f47', '#e5679a', '#9a9ea5']), 0, 0.55, 0);
+      cb.add(this.carGeo.cabin, '#bfe9ff', 0, 1.15, 0);
+      for (const a of [-1.2, 1.2]) for (const bb of [-0.8, 0.8]) cb.add(this.carGeo.wheel, '#2b2b2b', bb, 0.32, a, 0, 0, Math.PI / 2);
+    }
+    const m = cb.build(this.mats.solid);
+    if (m) { m.matrixAutoUpdate = true; m.receiveShadow = false; g.add(m); }
+    this.group.add(g);
+    return g;
+  }
+
+  private laneSpeed(p: CarPath): number {
+    if (p.kind === 'avenue') return Math.abs(p.off) < 3 ? 12 : 9;
+    return 8;
+  }
+
+  private carPos(c: Car, out: THREE.Vector3): number {
+    const p = c.path;
+    if (p.kind === 'avenue') {
+      const r = this.route.at(c.u, this.sample);
+      const o = this.route.roadOffset(c.u) + p.off;
+      out.set(r.x + r.nx * o, 0, r.z + r.nz * o);
+      const slope = this.route.roadSlope(c.u);
+      return p.dir > 0 ? Math.atan2(-slope, 1) : Math.atan2(slope, -1);
+    }
+    if (p.kind === 'side') { out.set(p.x, 0, -c.u); return p.dir > 0 ? 0 : Math.PI; }
+    out.set(c.u, 0, p.z); return p.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+  }
+
+  /** Is z (on a side street) inside a river row's water? */
+  private inRiver(z: number): boolean {
+    const jz = Math.floor(-z / PZ);
+    if (!this.city.isRiverRow(jz)) return false;
+    const zNear = -jz * PZ, zFar = -(jz + 1) * PZ;
+    return z < zNear - 3 && z > zFar + 3;
+  }
+
+  /** Place a car on a free lane somewhere between zNear and zFar (negative z is ahead). */
+  private spawnCar(c: Car, zNear: number, zFar: number): boolean {
+    const rng = this.trafficRng;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const z = zNear + (zFar - zNear) * rng.next();
+      const roll = rng.next();
+      let path: CarPath;
+      let u: number;
+      if (roll < 0.5) {
+        const dir = rng.chance(0.5) ? 1 : -1;
+        const off = (rng.chance(0.5) ? 1.75 : 5.25) * dir;   // forward traffic keeps right (+x when facing ahead)
+        path = { kind: 'avenue', off, dir }; u = -z;
+        if (u < 40) continue;
+      } else if (roll < 0.85) {
+        const ix = rng.pick([-3, -2, -1, 1, 2, 3]);
+        const dir = rng.chance(0.5) ? 1 : -1;
+        path = { kind: 'side', x: ix * PX + (dir > 0 ? 2 : -2), dir }; u = -z;
+        if (this.inRiver(z)) continue;
       } else {
-        cb.add(this.carGeo.body, col, 0, 0.55, 0);
-        cb.add(this.carGeo.cabin, '#bfe9ff', 0, 1.15, 0);
-        for (const a of [-1.2, 1.2]) for (const bb of [-0.8, 0.8]) cb.add(this.carGeo.wheel, '#2b2b2b', bb, 0.32, a, 0, 0, Math.PI / 2);
+        const jz = Math.max(1, Math.round(-z / PZ));
+        const dir = rng.chance(0.5) ? 1 : -1;
+        path = { kind: 'cross', z: -jz * PZ + (dir > 0 ? 2 : -2), dir }; u = rng.sign() * rng.range(30, 300);
+        if (Math.abs(u) < 14) continue;
       }
-      const carMesh = cb.build(this.mats.solid);
-      if (carMesh) { carMesh.matrixAutoUpdate = true; g.add(carMesh); }
-      void mk;
-      const speed = (isBus ? 7 : rng.range(8, 14)) * dir;
-      // path: a line segment through the macro tile along the chosen street
-      const span = alongZ ? MZ : MX;
-      let u = rng.range(0, span);
-      const lineX = alongZ ? b.tile.x0 : 0, lineZ = alongZ ? 0 : b.tile.z1;
-      const x0 = alongZ ? lineX + laneOff : Math.floor(b.tile.x0 / MX) * MX;
-      const z1 = alongZ ? Math.ceil(b.tile.z1 / MZ) * MZ : lineZ - laneOff;
-      g.rotation.y = alongZ ? (dir < 0 ? 0 : Math.PI) : (dir > 0 ? -Math.PI / 2 : Math.PI / 2);
-      animated.push({
-        obj: g,
-        update(dt) {
-          u = (u + speed * dt + span * 10) % span;
-          const x = alongZ ? x0 : x0 + u;
-          const z = alongZ ? z1 - u : z1;
-          g.position.set(x, terrain.at(x, z) + 0.05, z);
-        },
-        dispose() { carMesh?.geometry.dispose(); },
-      });
-      g.position.set(x0, 0, z1);
+      // keep a gap to anyone already in this lane (same lane, same speed: they will never close it)
+      const clash = this.cars.some(o => o !== c && o.active && sameLane(o.path, path) && Math.abs(o.u - u) < 14);
+      if (clash) continue;
+      c.path = path; c.u = u; c.active = true; c.rot = NaN;
+      return true;
+    }
+    return false;
+  }
+
+  private initTraffic(): void {
+    const n = this.params.quality === 'high' ? 34 : 16;
+    for (let i = 0; i < n; i++) {
+      const bus = this.trafficRng.chance(0.15);
+      const c: Car = { g: this.makeVehicle(this.trafficRng, bus), path: { kind: 'avenue', off: 5.25, dir: 1 }, u: 0, active: false, rot: NaN, bus };
+      this.cars.push(c);
+      // the city starts already busy, spread from just ahead of the launch tower into the haze
+      if (!this.spawnCar(c, -30, -560)) c.g.visible = false;
     }
   }
+
+  private updateTraffic(dt: number, cam: THREE.Vector3): void {
+    const pos = this.trafficTmp;
+    for (const c of this.cars) {
+      if (!c.active) { if (this.spawnCar(c, cam.z - 480, cam.z - 560)) c.g.visible = true; else continue; }
+      const p = c.path;
+      const v = this.laneSpeed(p) * dt;
+      if (p.kind === 'avenue') {
+        c.u += p.dir * v;
+      } else if (p.kind === 'side') {
+        const before = -c.u;
+        c.u += p.dir * v;
+        const after = -c.u;
+        // reaching a river: turn onto the riverside road instead of driving into the water
+        const jzA = p.dir > 0 ? Math.floor(-after / PZ) : Math.floor(-before / PZ);
+        if (p.dir > 0 && this.city.isRiverRow(jzA) && after < -jzA * PZ && before >= -jzA * PZ) {
+          const turn = this.trafficRng.chance(0.5) ? 1 : -1;
+          c.path = { kind: 'cross', z: -jzA * PZ + (turn > 0 ? 2 : -2), dir: turn }; c.u = p.x;
+        } else if (p.dir < 0) {
+          const jzB = Math.floor(-before / PZ) - 1;
+          const bank = -(jzB + 1) * PZ;
+          if (this.city.isRiverRow(jzB) && before < bank && after >= bank) {
+            const turn = this.trafficRng.chance(0.5) ? 1 : -1;
+            c.path = { kind: 'cross', z: bank + (turn > 0 ? 2 : -2), dir: turn }; c.u = p.x;
+          }
+        }
+      } else {
+        c.u += p.dir * v;
+      }
+      const targetRot = this.carPos(c, pos);
+      pos.y = this.terrain.at(pos.x, pos.z) + 0.05;
+      // retire cars once they are behind the camera, at the launch tower, or far off to the side in the haze
+      const offRoute = c.path.kind === 'avenue' && c.u < 10;
+      if (pos.z > cam.z + 12 || pos.z < cam.z - 620 || Math.abs(pos.x - cam.x) > 380 || offRoute) {
+        c.active = false; c.g.visible = false; continue;
+      }
+      // turn the body smoothly (corners and the boulevard's bends)
+      if (Number.isNaN(c.rot)) c.rot = targetRot;
+      let dr = targetRot - c.rot;
+      dr = Math.atan2(Math.sin(dr), Math.cos(dr));
+      c.rot += dr * Math.min(1, dt * 5);
+      c.g.position.copy(pos);
+      c.g.rotation.set(0, c.rot, 0);
+    }
+  }
+  private trafficTmp = new THREE.Vector3();
 
   // ------------------------------------------------------------------ decoys
   private addDecoys(group: THREE.Group, decoys: EventObject[], rng: Rng, I: number, J: number, blocks: BlockInfo[]): void {
@@ -516,7 +627,9 @@ export class World {
       const tail = new THREE.Mesh(CYL_LO, mk('#3f5f8a')); tail.scale.set(0.5, 6, 0.5); tail.rotation.x = Math.PI / 2; tail.position.z = 4.5; g.add(tail);
       const rotor = new THREE.Mesh(BOX, mk('#222')); rotor.scale.set(9, 0.1, 0.4); rotor.position.y = 1.5; g.add(rotor);
       g.position.set(cx + rng.range(-40, 40), rng.range(40, 80), cz + rng.range(-40, 40));
-      animated.push({ obj: g, update(dt, t) { rotor.rotation.y += dt * 30; g.position.x += Math.sin(t * 0.3) * dt * 4; g.position.z += dt * 2; }, dispose() {} });
+      const hdir = rng.sign(), hy = g.position.y;
+      g.rotation.y = hdir > 0 ? -Math.PI / 2 : Math.PI / 2;
+      animated.push({ obj: g, update(dt, t) { rotor.rotation.y += dt * 30; g.position.x += hdir * dt * 9; g.position.y = hy + Math.sin(t * 0.6) * 0.6; }, dispose() {} });
     }
   }
 
@@ -563,6 +676,7 @@ export class World {
   update(dt: number, s: number, camera: THREE.Vector3, planTime: number, hideNearCamera = true): void {
     this.elapsed += dt;
     this.stream(s);
+    this.updateTraffic(dt, camera);
     this.sky.position.set(camera.x, Math.max(0, camera.y - 60), camera.z);
     for (const [, t] of this.tiles) {
       for (const a of t.animated) a.update(dt, this.elapsed);
@@ -585,6 +699,8 @@ export class World {
     for (const [, p] of this.track) { this.group.remove(p.group); for (const d of p.disposables) d.dispose(); }
     this.track.clear();
     for (const eo of this.eventObjects) eo.dispose();
+    for (const c of this.cars) { this.group.remove(c.g); c.g.traverse(o => { const mm = o as THREE.Mesh; if (mm.isMesh) mm.geometry.dispose(); }); }
+    this.cars = [];
     for (const m of this.matCache.values()) m.dispose();
     for (const g of Object.values(this.carGeo)) g.dispose();
     this.sky.traverse(o => { const mm = o as THREE.Mesh; if (mm.geometry) mm.geometry.dispose(); if (mm.material) (mm.material as THREE.Material).dispose(); });
