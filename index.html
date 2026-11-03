@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-    <meta name="theme-color" content="#f6efe3" />
+    <meta name="theme-color" content="#0f1b3d" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="description" content="Pack the powder, fire the cannon, and watch Soarin' Steve fly across the city." />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
@@ -19,8 +19,11 @@
       <!-- ───────── Menu ───────── -->
       <div id="menu" class="layer">
         <div class="title-wrap">
-          <h1 class="title"><span>Soarin'</span> <span>Steve</span></h1>
-          <div class="subtitle">pack the powder · light the fuse · fly, steve, fly</div>
+          <div class="marquee"><div class="marquee-inner">
+            <div class="presents">★ The Human Cannonball ★</div>
+            <h1 class="title"><span class="t1">Soarin'</span><span class="t2">Steve</span></h1>
+            <div class="subtitle">Pack the powder · Light the fuse · Fly!</div>
+          </div></div>
         </div>
 
         <div class="edge edge-left">
@@ -29,31 +32,32 @@
         </div>
 
         <div class="edge edge-right">
-          <div class="wallet paper-chip"><span class="lbl">Wallet</span><span id="wallet">$0</span></div>
+          <div class="wallet plate"><span class="lbl">Bankroll</span><span id="wallet">$0</span></div>
           <div class="tier-picker" id="tier-picker"></div>
           <button class="tag small" id="btn-settings"><span class="ico">⚙</span><span>Settings</span></button>
         </div>
 
-        <div class="tap-hint">tap anywhere to play</div>
+        <div class="tap-hint"><span class="star">★</span> Tap anywhere to play <span class="star">★</span></div>
       </div>
 
       <!-- ───────── Game HUD ───────── -->
       <div id="hud" class="layer hidden">
         <div class="hud-top">
           <button class="tag small" id="btn-back"><span class="ico">←</span><span>Menu</span></button>
-          <div class="score paper-chip">
+          <div class="score plate">
+            <div class="lbl">Distance</div>
             <div class="dist"><span id="hud-dist">0</span><small> m</small></div>
             <div class="cash" id="hud-cash">$0.00</div>
           </div>
-          <div class="wager paper-chip">
+          <div class="wager plate">
             <span class="lbl">Wager</span><span id="hud-wager">$1.00</span>
             <span class="lbl" id="hud-plane">Big Top Red</span>
           </div>
         </div>
 
         <div class="aim-hint" id="aim-hint">
-          <div class="pull-meter"><div class="pull-fill" id="pull-fill"></div></div>
-          <div>drag down to pack the powder, let go to fire</div>
+          <div class="gauge plate" id="gauge"></div>
+          <div class="aim-text" id="aim-text">Drag down to pack the powder · let go to fire</div>
         </div>
 
         <div class="boost-bar" id="boost-bar">
@@ -67,7 +71,8 @@
 
       <!-- ───────── Result ───────── -->
       <div id="result" class="modal hidden">
-        <div class="paper sheet result-sheet">
+        <div class="sheet result-sheet">
+          <div class="report-head">★ Stunt Report ★</div>
           <div class="stamp" id="result-stamp">Nice flight, Steve!</div>
           <div class="result-grid">
             <div><span class="lbl">Distance</span><strong id="r-dist">0 m</strong></div>
@@ -76,7 +81,7 @@
             <div class="payout"><span class="lbl">Payout</span><strong id="r-payout">$0</strong></div>
           </div>
           <details class="fair">
-            <summary>Fairness details</summary>
+            <summary>Fairness proof</summary>
             <div id="r-fair"></div>
           </details>
           <div class="row">
@@ -88,7 +93,7 @@
 
       <!-- ───────── Panels ───────── -->
       <div id="panel" class="modal hidden">
-        <div class="paper sheet panel-sheet">
+        <div class="sheet panel-sheet">
           <button class="close" id="panel-close" aria-label="Close">×</button>
           <div id="panel-body"></div>
         </div>

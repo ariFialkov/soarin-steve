@@ -51,8 +51,39 @@ export class UI {
     for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>('.boost'))) {
       b.addEventListener('click', () => this.toggleBoost(b.dataset.kind as BoostKind));
     }
+    this.buildGauge();
     this.hud.classList.add('hidden');
     this.setAimingHud(true);
+  }
+
+  /** Semicircular powder gauge: a coloured arc that fills, ticks, and a needle. */
+  private buildGauge(): void {
+    const cx = 60, cy = 58, r = 46;
+    const xy = (a: number, rr: number) => [(cx + Math.cos(a) * rr).toFixed(1), (cy - Math.sin(a) * rr).toFixed(1)];
+    const pt = (a: number, rr: number) => xy(a, rr).join(',');
+    const ticks = Array.from({ length: 11 }, (_, i) => {
+      const a = Math.PI * (1 - i / 10), major = i % 5 === 0;
+      const [x1, y1] = xy(a, r - 11), [x2, y2] = xy(a, r - (major ? 19 : 15));
+      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#fff6e0" stroke-width="${major ? 2.2 : 1.4}" stroke-linecap="round" opacity="${major ? 0.9 : 0.6}"/>`;
+    }).join('');
+    const arc = `M${pt(Math.PI, r)} A${r} ${r} 0 0 1 ${pt(0, r)}`;
+    $('gauge').innerHTML = `
+      <svg viewBox="0 0 120 64" aria-hidden="true">
+        <defs><linearGradient id="g-heat" x1="0" x2="1" y1="0" y2="0">
+          <stop offset="0" stop-color="#35b866"/><stop offset="0.5" stop-color="#ffc93c"/><stop offset="0.85" stop-color="#ff8a1f"/><stop offset="1" stop-color="#e23b3b"/>
+        </linearGradient></defs>
+        <path d="${arc}" fill="none" stroke="#0b1430" stroke-width="11" stroke-linecap="round"/>
+        <path d="${arc}" fill="none" stroke="rgba(255,246,224,0.12)" stroke-width="8" stroke-linecap="round"/>
+        <path id="pull-arc" d="${arc}" fill="none" stroke="url(#g-heat)" stroke-width="8" stroke-linecap="round" pathLength="100" stroke-dasharray="100 100" stroke-dashoffset="100"/>
+        ${ticks}
+        <text x="${cx - r - 2}" y="${cy + 6}" font-size="7" fill="#d9cfb4" font-family="Barlow Condensed, sans-serif" font-weight="800" text-anchor="middle">MIN</text>
+        <text x="${cx + r + 2}" y="${cy + 6}" font-size="7" fill="#ff6b5e" font-family="Barlow Condensed, sans-serif" font-weight="800" text-anchor="middle">MAX</text>
+        <g id="pull-needle" transform="rotate(-90 ${cx} ${cy})">
+          <polygon points="${cx - 2.6},${cy} ${cx + 2.6},${cy} ${cx},${cy - r + 9}" fill="#e23b3b" stroke="#6d0f18" stroke-width="0.8"/>
+        </g>
+        <circle cx="${cx}" cy="${cy}" r="5" fill="#ffc93c" stroke="#6d0f18" stroke-width="1.2"/>
+      </svg>
+      <div class="readout"><span id="pull-pct">0%</span><span class="lbl">powder</span></div>`;
   }
 
   // ------------------------------------------------------------ engine events
@@ -75,7 +106,8 @@ export class UI {
       $('btn-back').classList.remove('hidden-now');
     } else if (s === 'betting') {
       $('btn-back').classList.add('hidden-now');
-      $('aim-hint').textContent = 'fire in the hole…';
+      $('aim-hint').classList.add('firing');
+      $('aim-text').textContent = 'Fire in the hole!';
     } else if (s === 'flying') {
       $('fumble').classList.remove('show');
       this.setAimingHud(false);
@@ -86,7 +118,14 @@ export class UI {
   }
 
   onPull(p: number): void {
-    $('pull-fill').style.width = `${Math.round(p * 100)}%`;
+    if (p > 0 || this.state === 'aiming') this.showPull(p);
+  }
+
+  private showPull(p: number): void {
+    $('pull-arc').setAttribute('stroke-dashoffset', String(100 - p * 100));
+    $('pull-needle').setAttribute('transform', `rotate(${(-90 + 180 * p).toFixed(1)} 60 58)`);
+    $('pull-pct').textContent = `${Math.round(p * 100)}%`;
+    $('gauge').classList.toggle('hot', p > 0.85);
   }
 
   onHud(info: HudInfo): void {
@@ -116,7 +155,7 @@ export class UI {
     const stamp = $('result-stamp');
     const m = r.multiplier;
     const who = TIER_CONFIG[r.tier].character.split(' ').pop();
-    stamp.textContent = this.lastFumble ? 'Misfire!' : m >= 10 ? 'LEGENDARY!' : m >= 3 ? 'What a stunt!' : m >= 1 ? `Nice flight, ${who}!` : m >= 0.5 ? `${who} will walk it off` : 'Ouch. Short hop';
+    stamp.textContent = this.lastFumble ? 'Misfire!' : m >= 10 ? 'Legendary!' : m >= 3 ? 'Death-defying!' : m >= 1 ? `Nice flight, ${who}!` : m >= 0.5 ? `${who} walks it off` : 'Ouch. Short hop';
     this.lastFumble = null;
     stamp.classList.toggle('big', m >= 1);
     $('r-fair').innerHTML = `
@@ -158,7 +197,11 @@ export class UI {
   // ------------------------------------------------------------ HUD helpers
   private setAimingHud(aiming: boolean): void {
     $('aim-hint').classList.toggle('hidden', !aiming);
-    $('aim-hint').innerHTML = '<div class="pull-meter"><div class="pull-fill" id="pull-fill"></div></div><div>drag down to pack the powder, let go to fire</div>';
+    if (aiming) {
+      $('aim-hint').classList.remove('firing');
+      $('aim-text').textContent = 'Drag down to pack the powder · let go to fire';
+      this.showPull(0);
+    }
     $('boost-bar').classList.toggle('hidden', aiming);
     $('boost-hint').textContent = '';
   }
@@ -359,7 +402,7 @@ export class UI {
       <h3>House</h3>
       <div class="setting"><span>Return to player (RTP) <span class="muted">demo operator setting</span></span><span><input type="number" id="s-rtp" min="50" max="100" step="0.5" value="${(rtp * 100).toFixed(1)}"> %</span></div>
       <div class="setting"><span>Demo wallet</span><span><button class="switch" id="s-wallet">Reset to ${money(1000)}</button></span></div>
-      <div class="setting"><span>Everything (planes, boosts, wallet)</span><span><button class="switch" id="s-reset">Reset profile</button></span></div>
+      <div class="setting"><span>Everything (suits, boosts, wallet)</span><span><button class="switch" id="s-reset">Reset profile</button></span></div>
       <h3>How the game decides</h3>
       <p class="muted">Every round is settled by the game server the instant the cannon fires, before Steve moves. The server publishes a hash of its seed before the bet, then reveals the seed afterwards so you can verify the result. The powder charge, the boosts and the scenery are all just the show.</p>
       <h3>Credits</h3>

@@ -131,10 +131,17 @@ not crush losses: big losses (under 0.3×) are 2 to 12% of rounds depending on s
 round returns about 0.6 to 0.75×, and misfires are a rare Legend-only surprise. A test guards it.
 Each tier has a free default suit; the rest are bought from the wallet.
 
+## Look
+
+The interface is styled like a daredevil show poster: navy plates with gold trim, red ribbons, a
+marquee sign with chasing bulbs, slanted buttons, and a speedometer-style powder gauge. Display
+type is Bungee and UI type is Barlow Condensed, both bundled with the app (via Fontsource) so
+they work offline. Numbers sit directly on solid plates, never on a translucent highlight.
+
 ## Controls
 
 - **Menu**: tap anywhere outside the side buttons to play. Side groups slide away.
-- **Fire**: drag down to pack the powder (the barrel rises and shakes), let go to fire.
+- **Fire**: drag down to pack the powder (the gauge needle climbs, the barrel rises and shakes), let go to fire.
 - **Leaf blower**: select it, then press and hold behind Steve (drag to move, tap to jump).
   Behind pushes forward, below lifts, off to one side nudges sideways.
 - **Confetti cannon**: select it, then tap behind Steve. Slightly below gives lift.

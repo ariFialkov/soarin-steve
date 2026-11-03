@@ -30,7 +30,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
     stake: 1,
     baseDistance: 630,
     maxMultiplier: 20,
-    accent: '#7bc96f',
+    accent: '#35b866',
     buckets: [
       { p: 0.05, lo: 0.3, hi: 0.45 },
       { p: 0.30, lo: 0.45, hi: 0.8 },
@@ -47,7 +47,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
     stake: 5,
     baseDistance: 930,
     maxMultiplier: 50,
-    accent: '#5fb8e6',
+    accent: '#2f86e8',
     buckets: [
       { p: 0.06, lo: 0.25, hi: 0.45 },
       { p: 0.31, lo: 0.45, hi: 0.8 },
@@ -65,7 +65,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
     stake: 20,
     baseDistance: 1320,
     maxMultiplier: 150,
-    accent: '#f3a35c',
+    accent: '#ff8a1f',
     buckets: [
       { p: 0.08, lo: 0.2, hi: 0.45 },
       { p: 0.32, lo: 0.45, hi: 0.8 },
@@ -84,7 +84,7 @@ export const TIER_CONFIG: Record<Tier, TierConfig> = {
     stake: 100,
     baseDistance: 1800,
     maxMultiplier: 500,
-    accent: '#e5679a',
+    accent: '#ff3b4e',
     buckets: [
       { p: 0.10, lo: 0.15, hi: 0.42 },
       { p: 0.32, lo: 0.42, hi: 0.8 },
