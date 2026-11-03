@@ -36,9 +36,14 @@ visit it works offline.
      the **expected multiplier is exactly the configured RTP**,
    - returns the payout, the distance (`multiplier × tier base distance`) and a world seed.
 3. Only then does the client build a flight plan (`src/game/flightPlan.ts`): a precomputed
-   position/velocity/height curve that ends at that distance. The height curve is one clean
-   ballistic parabola from the muzzle over the apex to the touchdown; aerial events add small
-   parabolic kicks and ground events dive to the pad and bounce. Objects are chosen to suit
+   position/velocity/height curve that ends at that distance. Vertical motion uses **one gravity
+   for the whole flight** (kept in a believable band): Steve follows true ballistic arcs between
+   contact points (the muzzle, any bounce pad, the touchdown), and boosts and hits are instant
+   vertical kicks under that same gravity, each arc solved so it meets its next contact. On long
+   flights the boosts carry him in a hop-hop-hop across the sky rather than gravity being turned
+   down. Horizontal motion is closed-form, so the arrival point is exact. On touchdown he tumbles
+   along the road for exactly v²/(2·friction): the touchdown speed and the surface he lands on
+   (asphalt, old-town cobbles, park pavers or a bridge deck) decide how far and how bouncily. Objects are chosen to suit
    Steve's altitude at that point: aerial ones (gulls, balloons, banner planes, blimps, airliner
    jetwash, fireworks) and ground ones that bounce him back up high (trampolines, bouncy castles,
    tyre stacks, industrial fans) or barely (traffic cones, a hot dog cart, a mattress). How hard
@@ -70,11 +75,11 @@ flight plans always end exactly at the resolved distance.
 
 ## The city and the route
 
-The flight follows a **route** (`src/game/route.ts`): a path along the city's street centrelines
-that runs straight for the first few blocks, then turns at intersections with rounded corners,
-always making progress away from the cannon. Steve, the camera, the cash track and every event are
-positioned by arc length along it. Streets the route uses become boulevards (wider, with sidewalks,
-lamps and trees); the block on the inside of each turn becomes a town square.
+The flight follows a **route** (`src/game/route.ts`): a perfectly straight line down the city's
+central boulevard (a test guarantees it never turns). Steve, the camera, the cash track and every
+event are positioned by distance along it, and both Steve and the camera always face straight down
+it. The boulevard's road ribbon winds beneath the flight line inside a wide corridor, painted in
+the surface of each district.
 
 The city itself (`src/game/city.ts`) is an endless grid of blocks over gently rolling **terrain**
 (`src/game/terrain.ts`): streets follow the ground, blocks sit on flat terraces with deep kerbs.
@@ -93,8 +98,11 @@ Steve is a jointed figure built from primitives (`src/game/steve.ts`) with a lib
 (cannonball tuck, superman, flying squirrel, flail, sprawl, sit, gingerly, brush, hero, triumph).
 Each joint follows its pose with an under-damped spring and lags behind the body's acceleration,
 so he moves like a rag doll rather than snapping between poses; the engine adds a tumbling spin
-for the launch, bounces and the wipeout. His cape is a small Verlet cloth pinned at the shoulders
-with stiff bend constraints, so it streams and flutters like a superhero's rather than a bedsheet. After touchdown he lies stunned with stars circling, sits up, stands
+for the launch, bounces and the wipeout. His cape is a 9×12 Verlet cloth tied at the two collarbones, simulated in his body's frame (so
+speed never stretches it), with long-range attachment limits, collision with his back and
+backpack, a capped oncoming airflow and ripples that travel down it from the shoulders. Steve is
+human-sized (about 1.65 units, next to 3.8-unit cars) and a grounding step keeps every limb on top
+of the road while he tumbles, lies stunned, sits up and stands. After touchdown he lies stunned with stars circling, sits up, stands
 gingerly, brushes off both shoulders, shakes it off and strikes the pose before the result card.
 
 58 stunt suits across four tiers (Rookie $1, Pro $5, Daredevil $20, Legend $100) set his colours,

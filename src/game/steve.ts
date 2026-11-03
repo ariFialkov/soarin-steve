@@ -21,6 +21,8 @@ export const POSES: Record<string, Pose> = {
   superman: { torso: [-0.05, 0, 0], head: [0.45, 0, 0], lShoulder: [2.95, 0, -0.12], rShoulder: [2.95, 0, 0.12], lElbow: [0.05, 0, 0], rElbow: [0.05, 0, 0], lHip: [-0.08, 0, -0.04], rHip: [-0.08, 0, 0.04], lKnee: [-0.08, 0, 0], rKnee: [-0.08, 0, 0] },
   // arms and legs fanned out
   squirrel: { torso: [-0.1, 0, 0], head: [0.5, 0, 0], lShoulder: [0.7, 0, -1.55], rShoulder: [0.7, 0, 1.55], lElbow: [0.25, 0, 0], rElbow: [0.25, 0, 0], lHip: [0.1, 0, -0.55], rHip: [0.1, 0, 0.55], lKnee: [-0.45, 0, 0], rKnee: [-0.45, 0, 0] },
+  // rolling along the ground: knees and elbows in, so the body stays a compact ball
+  tumble: { torso: [0.5, 0, 0.1], head: [0.4, 0.2, 0], lShoulder: [1.8, 0, -0.6], rShoulder: [1.2, 0, 0.7], lElbow: [1.6, 0, 0], rElbow: [1.9, 0, 0], lHip: [1.7, 0, -0.3], rHip: [1.2, 0, 0.35], lKnee: [-1.9, 0, 0], rKnee: [-1.4, 0, 0] },
   // mid-wipeout flailing
   flail: { torso: [0.3, 0, 0.1], head: [0.3, 0.3, 0], lShoulder: [2.4, 0, -1.0], rShoulder: [1.4, 0, 1.2], lElbow: [0.7, 0, 0], rElbow: [1.4, 0, 0], lHip: [0.9, 0, -0.5], rHip: [-0.4, 0, 0.4], lKnee: [-1.2, 0, 0], rKnee: [-0.5, 0, 0] },
   // flat on his back, star shaped
@@ -60,15 +62,24 @@ export interface SteveRig {
 // ---------------------------------------------------------------- cloth cape
 class ClothCape {
   readonly mesh: THREE.Mesh;
-  private W = 7; private H = 9;
-  private pinned: boolean[] = [];
+  /** Set by the rig: whether the rocket backpack is on (the cape then drapes over it). */
+  packOn = false;
+  private W = 9; private H = 12;
   private pos: Float32Array; private prev: Float32Array;
   private rest: { a: number; b: number; d: number; k: number }[] = [];
   private pinsLocal: THREE.Vector3[] = [];
+  private pinned: boolean[] = [];
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
+  private back = new THREE.Vector3();
+  private side = new THREE.Vector3();
   private inv = new THREE.Matrix4();
   private initialised = false;
+  private lastOrigin = new THREE.Vector3();
+  private origin = new THREE.Vector3();
+  private pinIdx: number[] = [];
+  /** max allowed distance of each particle from each pin (long-range attachments: the cape cannot stretch) */
+  private reach: number[][] = [];
 
   constructor(private torso: THREE.Object3D, private group: THREE.Object3D, material: THREE.Material, scale: number) {
     const geo = new THREE.PlaneGeometry(1, 1, this.W - 1, this.H - 1);
@@ -77,94 +88,142 @@ class ClothCape {
     const n = this.W * this.H;
     this.pos = new Float32Array(n * 3);
     this.prev = new Float32Array(n * 3);
-    // local layout (torso space): hangs from the shoulders, widening toward the hem
+    // rest shape (torso space): tied at the collarbones, widening to the hem, with soft vertical flutes
     for (let j = 0; j < this.H; j++) for (let i = 0; i < this.W; i++) {
       const v = j / (this.H - 1);
-      const half = 0.22 + 0.3 * v;
-      const x = (i / (this.W - 1) - 0.5) * 2 * half;
-      this.pinsLocal.push(new THREE.Vector3(x, 0.62 - v * 1.15, 0.2 + v * 0.1));
-      // only the two collarbone corners are fixed; the rest of the top edge hangs between them
+      const u = i / (this.W - 1) - 0.5;
+      const half = 0.24 + 0.32 * v;
+      const flute = Math.cos(u * Math.PI * 6) * 0.035 * v;
+      this.pinsLocal.push(new THREE.Vector3(u * 2 * half, 0.64 - v * 1.3, 0.26 + v * 0.1 + flute));
       this.pinned.push(j === 0 && (i === 0 || i === this.W - 1));
     }
     const idx = (i: number, j: number) => j * this.W + i;
     const link = (a: number, b: number, k: number) => {
-      const pa = this.pinsLocal[a], pb = this.pinsLocal[b];
-      this.rest.push({ a, b, d: pa.distanceTo(pb) * scale, k });
+      this.rest.push({ a, b, d: this.pinsLocal[a].distanceTo(this.pinsLocal[b]) * scale, k });
     };
+    this.pinIdx = this.pinned.map((p, k) => (p ? k : -1)).filter(k => k >= 0);
+    for (const pi of this.pinIdx) this.reach.push(this.pinsLocal.map(q => q.distanceTo(this.pinsLocal[pi]) * scale * 1.06));
     for (let j = 0; j < this.H; j++) for (let i = 0; i < this.W; i++) {
-      if (i + 1 < this.W) link(idx(i, j), idx(i + 1, j), 1);
+      if (i + 1 < this.W) link(idx(i, j), idx(i + 1, j), 1);                 // structural
       if (j + 1 < this.H) link(idx(i, j), idx(i, j + 1), 1);
-      if (i + 1 < this.W && j + 1 < this.H) { link(idx(i, j), idx(i + 1, j + 1), 0.7); link(idx(i + 1, j), idx(i, j + 1), 0.7); }
-      if (i + 2 < this.W) link(idx(i, j), idx(i + 2, j), 0.5);
-      if (j + 2 < this.H) link(idx(i, j), idx(i, j + 2), 0.6);
+      if (i + 1 < this.W && j + 1 < this.H) { link(idx(i, j), idx(i + 1, j + 1), 0.6); link(idx(i + 1, j), idx(i, j + 1), 0.6); }  // shear
+      if (j + 2 < this.H) link(idx(i, j), idx(i, j + 2), 0.75);               // stiff down the length: holds its shape
+      if (i + 2 < this.W) link(idx(i, j), idx(i + 2, j), 0.22);               // soft across: folds lengthwise into flutes
     }
   }
 
   reset(): void { this.initialised = false; }
 
+  /** Minimum distance behind the spine (torso space) at height y and width x: clears chest, shoulders, pack and seat. */
+  private clearance(x: number, y: number): number {
+    let z: number;
+    if (y > 0.5) z = 0.24;                       // shoulder blades
+    else if (y > -0.12) z = 0.25;                 // back
+    else z = 0.2;                                 // seat and legs
+    if (this.packOn && y > 0.1 && y < 0.62) z = 0.36;   // over the rocket backpack
+    // let it wrap a little around the sides
+    const ax = Math.abs(x);
+    if (ax > 0.28) z -= Math.min(z, (ax - 0.28) * 1.6);
+    return z;
+  }
+
   update(dt: number, t: number, velocity: THREE.Vector3): void {
     const n = this.W * this.H;
     this.torso.updateWorldMatrix(true, false);
+    const m = this.torso.matrixWorld;
+    this.origin.setFromMatrixPosition(m);
     if (!this.initialised) {
       for (let k = 0; k < n; k++) {
-        this.tmp.copy(this.pinsLocal[k]).applyMatrix4(this.torso.matrixWorld);
+        this.tmp.copy(this.pinsLocal[k]).applyMatrix4(m);
         this.pos[k * 3] = this.prev[k * 3] = this.tmp.x;
         this.pos[k * 3 + 1] = this.prev[k * 3 + 1] = this.tmp.y;
         this.pos[k * 3 + 2] = this.prev[k * 3 + 2] = this.tmp.z;
       }
+      this.lastOrigin.copy(this.origin);
       this.initialised = true;
     }
     dt = Math.min(dt, 1 / 30);
-    const damp = 0.985;
-    const g = -9.8 * 0.55;
-    // air drag toward still air; a little gust so it never sits dead still
-    const drag = 2.2;
-    const gust = Math.sin(t * 4.1) * 0.6 + Math.sin(t * 2.3 + 1) * 0.4;
+    // carry the cloth with the body's translation: only rotation and airflow should move it relative to him
+    const ddx = this.origin.x - this.lastOrigin.x, ddy = this.origin.y - this.lastOrigin.y, ddz = this.origin.z - this.lastOrigin.z;
+    this.lastOrigin.copy(this.origin);
     for (let k = 0; k < n; k++) {
       const o = k * 3;
-      const vx = (this.pos[o] - this.prev[o]) / Math.max(1e-4, dt), vy = (this.pos[o + 1] - this.prev[o + 1]) / Math.max(1e-4, dt), vz = (this.pos[o + 2] - this.prev[o + 2]) / Math.max(1e-4, dt);
-      const ax = -vx * drag + gust, ay = g - vy * drag * 0.6, az = -vz * drag;
+      this.pos[o] += ddx; this.pos[o + 1] += ddy; this.pos[o + 2] += ddz;
+      this.prev[o] += ddx; this.prev[o + 1] += ddy; this.prev[o + 2] += ddz;
+    }
+    // the oncoming air: opposite to his velocity, capped so a fast flight streams it rather than tearing it
+    let wx = -velocity.x, wy = -velocity.y, wz = -velocity.z;
+    const wl = Math.hypot(wx, wy, wz), wcap = 16;
+    if (wl > wcap) { wx *= wcap / wl; wy *= wcap / wl; wz *= wcap / wl; }
+    // world directions of the torso's back (+z) and side (+x)
+    this.back.set(0, 0, 1).transformDirection(m);
+    this.side.set(1, 0, 0).transformDirection(m);
+    const speed = velocity.length();
+    const flow = Math.min(1, speed / 22);
+    const damp = 0.985;
+    const grav = -5.4;
+    const drag = 2.4;
+    for (let k = 0; k < n; k++) {
+      if (this.pinned[k]) continue;
+      const o = k * 3;
+      const j = Math.floor(k / this.W), i = k % this.W;
+      const vrow = j / (this.H - 1);
+      const idt = 1 / Math.max(1e-4, dt);
+      const vx = (this.pos[o] - this.prev[o]) * idt, vy = (this.pos[o + 1] - this.prev[o + 1]) * idt, vz = (this.pos[o + 2] - this.prev[o + 2]) * idt;
+      // travelling ripples: waves run down the cape from the shoulders to the hem, stronger with airspeed
+      // travelling ripples plus a little lift, so at speed it streams up off his back instead of lying flat
+      const wave = (Math.sin(t * 15 - j * 0.85 + Math.sin(i * 0.9) * 0.6) * (2 + 26 * flow) + 9 * flow) * Math.pow(vrow, 1.1);
+      const sway = Math.sin(t * 9.5 - j * 0.6 + i * 0.45) * (1 + 7 * flow) * vrow;
+      const ax = (wx - vx) * drag + this.back.x * wave + this.side.x * sway;
+      const ay = grav + (wy - vy) * drag * 0.6 + this.back.y * wave + this.side.y * sway;
+      const az = (wz - vz) * drag + this.back.z * wave + this.side.z * sway;
       const nx = this.pos[o] + (this.pos[o] - this.prev[o]) * damp + ax * dt * dt;
       const ny = this.pos[o + 1] + (this.pos[o + 1] - this.prev[o + 1]) * damp + ay * dt * dt;
       const nz = this.pos[o + 2] + (this.pos[o + 2] - this.prev[o + 2]) * damp + az * dt * dt;
       this.prev[o] = this.pos[o]; this.prev[o + 1] = this.pos[o + 1]; this.prev[o + 2] = this.pos[o + 2];
       this.pos[o] = nx; this.pos[o + 1] = ny; this.pos[o + 2] = nz;
     }
-    void velocity;
-    // pins: the collarbone corners follow the shoulders
-    for (let i = 0; i < n; i++) {
-      if (!this.pinned[i]) continue;
-      this.tmp.copy(this.pinsLocal[i]).applyMatrix4(this.torso.matrixWorld);
-      this.pos[i * 3] = this.tmp.x; this.pos[i * 3 + 1] = this.tmp.y; this.pos[i * 3 + 2] = this.tmp.z;
+    for (let k = 0; k < n; k++) {
+      if (!this.pinned[k]) continue;
+      this.tmp.copy(this.pinsLocal[k]).applyMatrix4(m);
+      this.pos[k * 3] = this.tmp.x; this.pos[k * 3 + 1] = this.tmp.y; this.pos[k * 3 + 2] = this.tmp.z;
     }
-    // constraints: stiff enough to read as a superhero cape, not a bedsheet
-    this.inv.copy(this.torso.matrixWorld).invert();
-    for (let it = 0; it < 5; it++) {
+    this.inv.copy(m).invert();
+    for (let it = 0; it < 6; it++) {
       for (const r of this.rest) {
         const a = r.a * 3, b = r.b * 3;
         let dx = this.pos[b] - this.pos[a], dy = this.pos[b + 1] - this.pos[a + 1], dz = this.pos[b + 2] - this.pos[a + 2];
         const d = Math.hypot(dx, dy, dz) || 1e-6;
-        const diff = ((d - r.d) / d) * 0.5 * r.k;
-        dx *= diff; dy *= diff; dz *= diff;
         const pa = this.pinned[r.a], pb = this.pinned[r.b];
+        const diff = ((d - r.d) / d) * r.k * (pa || pb ? 1 : 0.5);
+        dx *= diff; dy *= diff; dz *= diff;
         if (!pa) { this.pos[a] += dx; this.pos[a + 1] += dy; this.pos[a + 2] += dz; }
         if (!pb) { this.pos[b] -= dx; this.pos[b + 1] -= dy; this.pos[b + 2] -= dz; }
-        if (pa && !pb) { this.pos[b] -= dx; this.pos[b + 1] -= dy; this.pos[b + 2] -= dz; }
-        if (pb && !pa) { this.pos[a] += dx; this.pos[a + 1] += dy; this.pos[a + 2] += dz; }
       }
-      // keep the cape behind the back (torso space z >= 0.16)
+      // long-range attachments: never farther from either tie than the cape's own length allows
+      for (let pi = 0; pi < this.pinIdx.length; pi++) {
+        const p0 = this.pinIdx[pi] * 3, reach = this.reach[pi];
+        for (let k = 0; k < n; k++) {
+          if (this.pinned[k]) continue;
+          const o = k * 3;
+          const dx = this.pos[o] - this.pos[p0], dy = this.pos[o + 1] - this.pos[p0 + 1], dz = this.pos[o + 2] - this.pos[p0 + 2];
+          const d = Math.hypot(dx, dy, dz);
+          if (d > reach[k]) { const f = reach[k] / d; this.pos[o] = this.pos[p0] + dx * f; this.pos[o + 1] = this.pos[p0 + 1] + dy * f; this.pos[o + 2] = this.pos[p0 + 2] + dz * f; }
+        }
+      }
+      // collision with the back (and pack): push any particle that strays inside back out behind it
       for (let k = 0; k < n; k++) {
         if (this.pinned[k]) continue;
         const o = k * 3;
         this.tmp.set(this.pos[o], this.pos[o + 1], this.pos[o + 2]).applyMatrix4(this.inv);
-        if (this.tmp.z < 0.16) {
-          this.tmp.z = 0.16;
-          this.tmp2.copy(this.tmp).applyMatrix4(this.torso.matrixWorld);
+        const zmin = this.clearance(this.tmp.x, this.tmp.y);
+        if (this.tmp.z < zmin && Math.abs(this.tmp.x) < 0.5) {
+          this.tmp.z = zmin;
+          this.tmp2.copy(this.tmp).applyMatrix4(m);
           this.pos[o] = this.tmp2.x; this.pos[o + 1] = this.tmp2.y; this.pos[o + 2] = this.tmp2.z;
         }
       }
     }
-    // write into the mesh in the group's local space
     this.group.updateWorldMatrix(true, false);
     this.inv.copy(this.group.matrixWorld).invert();
     const attr = this.mesh.geometry.attributes.position as THREE.BufferAttribute;
@@ -182,7 +241,7 @@ function capsule(r: number, len: number, mat: THREE.Material): THREE.Mesh {
   return new THREE.Mesh(g, mat);
 }
 
-export function buildSteve(suit: SuitDef): SteveRig {
+export function buildSteve(suit: SuitDef, scale = 1): SteveRig {
   const mats = {
     primary: new THREE.MeshLambertMaterial({ color: suit.primary }),
     secondary: new THREE.MeshLambertMaterial({ color: suit.secondary }),
@@ -199,6 +258,7 @@ export function buildSteve(suit: SuitDef): SteveRig {
   const track = <T extends THREE.Mesh>(m: T): T => { geos.push(m.geometry); return m; };
 
   const group = new THREE.Group();
+  group.scale.setScalar(scale);
   const body = new THREE.Group();
   const root = new THREE.Group();
   group.add(body); body.add(root);
@@ -250,7 +310,7 @@ export function buildSteve(suit: SuitDef): SteveRig {
   let cape: THREE.Mesh | null = null;
   let cloth: ClothCape | null = null;
   {
-    cloth = new ClothCape(torso, group, mats.cape, 1.45);
+    cloth = new ClothCape(torso, group, mats.cape, scale);
     cape = cloth.mesh;
     group.add(cape);
     geos.push(cape.geometry);
@@ -322,6 +382,7 @@ export function buildSteve(suit: SuitDef): SteveRig {
         c.x += v.x * dt; c.y += v.y * dt; c.z += v.z * dt;
       }
       apply();
+      if (cloth) cloth.packOn = pack.visible && rockets.some(r => r.visible);
       cloth?.update(dt, t, velocity);
     },
     dispose() { for (const g of geos) g.dispose(); for (const m of Object.values(mats)) m.dispose(); },

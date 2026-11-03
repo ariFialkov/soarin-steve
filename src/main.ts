@@ -4,6 +4,7 @@ import { Engine } from './game/engine';
 import { UI } from './ui/ui';
 import { profile } from './core/store';
 import { server } from './core/server';
+import { buildFlightPlan } from './game/flightPlan';
 import { audio } from './game/audio';
 
 audio.setEnabled(profile.sound);
@@ -24,4 +25,4 @@ ui.bind(engine);
 registerSW({ immediate: true });
 
 // Expose for debugging in the console.
-(window as unknown as { pp: unknown }).pp = { engine, ui, profile, server };
+(window as unknown as { pp: unknown }).pp = { engine, ui, profile, server, buildFlightPlan };

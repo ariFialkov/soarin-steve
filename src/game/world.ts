@@ -5,7 +5,7 @@
  */
 import * as THREE from 'three';
 import { Rng } from '../core/rng';
-import type { FlightPlan } from './flightPlan';
+import type { FlightPlan, Surface } from './flightPlan';
 import type { ParticleSystem } from './particles';
 import { GeoBatch, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture, stripQuad } from './geobatch';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -85,9 +85,12 @@ function materials(): { solid: THREE.Material; facade: THREE.Material; glass: TH
   };
 }
 
-const TRACK_STYLE = {
-  asphalt: { track: '#777b81', line: '#5f6369', lane: '#b9a04a', cross: '#575b61', label: '#3e4147', stroke: '#9a9ea5' },
-  bridge: { track: '#969aa1', line: '#7a7e85', lane: '#a39f7a', cross: '#6e7279', label: '#4a4e55', stroke: '#aab0b8' },
+/** Road ribbon paint per surface: base, kerb and track are shades of the same material. */
+const TRACK_STYLE: Record<Surface, { base: string; kerb: string; track: string; line: string; lane: string; cross: string; label: string; stroke: string }> = {
+  asphalt: { base: '#6f7378', kerb: '#8f8a80', track: '#777b81', line: '#5f6369', lane: '#b9a04a', cross: '#575b61', label: '#3e4147', stroke: '#9a9ea5' },
+  cobble:  { base: '#857a6e', kerb: '#a39888', track: '#8e8376', line: '#6f655a', lane: '#c2a874', cross: '#665c51', label: '#4a4038', stroke: '#b3a796' },
+  pavers:  { base: '#cdb994', kerb: '#b9a37c', track: '#d6c4a1', line: '#b39c74', lane: '#a88d62', cross: '#a3895f', label: '#6e5530', stroke: '#eadcbf' },
+  bridge:  { base: '#8b8f96', kerb: '#9ea3aa', track: '#969aa1', line: '#7a7e85', lane: '#a39f7a', cross: '#6e7279', label: '#4a4e55', stroke: '#aab0b8' },
 };
 
 export class World {
@@ -125,6 +128,15 @@ export class World {
   groundAt(s: number): number {
     const r = this.route.at(s, this.sample);
     return this.terrain.at(r.x, r.z);
+  }
+
+  /** What the road under the flight line is made of at route distance s. */
+  surfaceAt(s: number): Surface {
+    const r = this.route.at(s, this.sample);
+    const jz = Math.floor(-r.z / PZ);
+    if (this.city.isRiverRow(jz)) return 'bridge';
+    const d = this.city.districtAt(Math.floor((r.x + 1) / PX), jz);
+    return d === 'oldtown' ? 'cobble' : d === 'park' ? 'pavers' : 'asphalt';
   }
 
   districtAt(s: number): District {
@@ -257,16 +269,16 @@ export class World {
     const sub = 20;  // 2-unit sub-segments so the ribbon follows its bends
     for (let i = 0; i < sub; i++) {
       const qa = s0 + (i / sub) * TRACK_STEP, qb = s0 + ((i + 1) / sub) * TRACK_STEP;
-      const mid = this.route.at(qa + 1, this.sample);
-      const onBridge = this.city.isRiverRow(Math.floor(-mid.z / PZ));
-      const st = onBridge ? TRACK_STYLE.bridge : TRACK_STYLE.asphalt;
+      const surf = this.surfaceAt(qa + 1);
+      const onBridge = surf === 'bridge';
+      const st = TRACK_STYLE[surf];
       const a = this.route.at(qa, this.sample);
       const b = this.route.at(qb, this.sample2);
       const oa = ro(qa), ob = ro(qb);
       const ax = a.x + a.nx * oa, az = a.z + a.nz * oa, bx = b.x + b.nx * ob, bz = b.z + b.nz * ob;
       if (!onBridge) {
-        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7.4, hAt, 0.07), '#8f8a80');     // kerb line
-        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7, hAt, 0.09), '#6f7378');        // asphalt
+        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7.4, hAt, 0.07), st.kerb);       // kerb line
+        B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 7, hAt, 0.09), st.base);         // road surface
       }
       B.addRaw(stripQuad(ax, az, bx, bz, a.nx, a.nz, b.nx, b.nz, 6, hAt, 0.12), st.track);
       if (i % 2 === 0) {
@@ -291,8 +303,7 @@ export class World {
       const r0 = this.route.at(sm, this.sample);
       const o0 = ro(sm);
       const rx = r0.x + r0.nx * o0, rz = r0.z + r0.nz * o0;
-      const onBridge = this.city.isRiverRow(Math.floor(-rz / PZ));
-      const st = onBridge ? TRACK_STYLE.bridge : TRACK_STYLE.asphalt;
+      const st = TRACK_STYLE[this.surfaceAt(sm)];
       const ax = rx - r0.tx * 0.18, az = rz - r0.tz * 0.18, bx = rx + r0.tx * 0.18, bz = rz + r0.tz * 0.18;
       B.addRaw(stripQuad(ax, az, bx, bz, r0.nx, r0.nz, r0.nx, r0.nz, 6, hAt, 0.17), st.cross);
       const { tex, aspect } = makeLabel(fmtCash(sm * this.params.cashPerUnit), st.label, st.stroke);

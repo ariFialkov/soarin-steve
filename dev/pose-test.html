@@ -12,7 +12,7 @@ const sun = new THREE.DirectionalLight('#fff4d6', 1.7); sun.position.set(-30, 50
 const cam = new THREE.PerspectiveCamera(40, 1280/720, 0.1, 100);
 const names = Object.keys(POSES);
 const suit = suitById(new URLSearchParams(location.search).get('suit') || 'golden-cannonball');
-names.forEach((n, i) => { const s = buildSteve(suit); s.snapPose(n); s.rockets.forEach((k, j) => k.visible = j < 3); s.group.position.set((i - (names.length-1)/2) * 1.6, 0, 0); s.group.rotation.y = 0.6; if (n === 'superman' || n === 'squirrel' || n === 'tuck' || n === 'flail') s.root.rotation.x = -Math.PI/2; if (n === 'sprawl') s.root.rotation.x = Math.PI/2; scene.add(s.group); for (let k = 0; k < 150; k++) s.update(1/60, k/60); });
+names.forEach((n, i) => { const s = buildSteve(suit, 1); s.snapPose(n); s.rockets.forEach((k, j) => k.visible = j < 3); s.group.position.set((i - (names.length-1)/2) * 1.6, 0, 0); s.group.rotation.y = 0.6; if (n === 'superman' || n === 'squirrel' || n === 'tuck' || n === 'flail') s.root.rotation.x = -Math.PI/2; if (n === 'sprawl') s.root.rotation.x = Math.PI/2; scene.add(s.group); for (let k = 0; k < 150; k++) s.update(1/60, k/60); });
 const cannon = buildCannon(); cannon.group.position.set(0, -3.2, 0); cannon.setCharge(0.5); cannon.update(0, 0); scene.add(cannon.group);
 cam.position.set(0, 1.5, 15); cam.lookAt(0, -0.5, 0);
 r.render(scene, cam); window.done = true;

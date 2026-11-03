@@ -105,16 +105,25 @@ export class Route {
   }
 
   private rebuildPieces(): void {
-    // straight legs between nodes, corners replaced by quarter-circle fillets
-    const pts = this.nodes.map(n => ({ x: n.ix * PX, z: -n.jz * PZ }));
+    // merge collinear legs into single straight lines; only a real change of direction gets a fillet
+    const raw = this.nodes.map(n => ({ x: n.ix * PX, z: -n.jz * PZ }));
+    const pts: { x: number; z: number }[] = [raw[0]];
+    for (let i = 1; i < raw.length; i++) {
+      if (i < raw.length - 1) {
+        const a = pts[pts.length - 1], b = raw[i], c = raw[i + 1];
+        const cross = (b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x);
+        if (Math.abs(cross) < 1e-6) continue;   // straight on: no corner here
+      }
+      pts.push(raw[i]);
+    }
     const pieces: Piece[] = [];
     let s = 0;
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i], b = pts[i + 1];
       const len = Math.hypot(b.x - a.x, b.z - a.z);
       const dx = (b.x - a.x) / len, dz = (b.z - a.z) / len;
-      let startTrim = i === 0 ? 0 : FILLET;
-      let endTrim = i === pts.length - 2 ? 0 : FILLET;
+      const startTrim = i === 0 ? 0 : FILLET;
+      const endTrim = i === pts.length - 2 ? 0 : FILLET;
       const lineLen = len - startTrim - endTrim;
       pieces.push({ kind: 'line', s0: s, len: lineLen, x: a.x + dx * startTrim, z: a.z + dz * startTrim, dx, dz });
       s += lineLen;
@@ -122,16 +131,14 @@ export class Route {
         const c = pts[i + 2];
         const len2 = Math.hypot(c.x - b.x, c.z - b.z);
         const ex = (c.x - b.x) / len2, ez = (c.z - b.z) / len2;
-        // arc from P1 = b - d*R to P2 = b + e*R around O = b - d*R + e*R
         const ox = b.x - dx * FILLET + ex * FILLET, oz = b.z - dz * FILLET + ez * FILLET;
         const p1x = b.x - dx * FILLET, p1z = b.z - dz * FILLET;
         const a0 = Math.atan2(p1z - oz, p1x - ox);
-        const cross = dx * ez - dz * ex;             // +: turning toward +angle in (x,z) plane
+        const cross = dx * ez - dz * ex;
         const sweep = (Math.PI / 2) * (cross > 0 ? 1 : -1);
         pieces.push({ kind: 'arc', s0: s, len: (Math.PI / 2) * FILLET, cx: ox, cz: oz, r: FILLET, a0, sweep });
         s += (Math.PI / 2) * FILLET;
       }
-      void endTrim; void startTrim;
     }
     this.pieces = pieces;
     this.total = s;
