@@ -36,12 +36,14 @@ visit it works offline.
      the **expected multiplier is exactly the configured RTP**,
    - returns the payout, the distance (`multiplier × tier base distance`) and a world seed.
 3. Only then does the client build a flight plan (`src/game/flightPlan.ts`): a precomputed
-   position/velocity/height curve that ends at that distance, with boosts and obstacles placed
-   where the curve speeds up or slows down. Objects are chosen to suit Steve's altitude at that
-   point: aerial ones (gulls, balloons, banner planes, blimps, airliner jetwash, fireworks) and
-   ground ones that bend the height curve down to meet them and bounce him back up (trampolines,
-   bouncy castles, tyre stacks, industrial fans) or barely (traffic cones, a hot dog cart, a
-   mattress). Some flights end in a dumpster or a hay truck, which stop him dead with no skid.
+   position/velocity/height curve that ends at that distance. The height curve is one clean
+   ballistic parabola from the muzzle over the apex to the touchdown; aerial events add small
+   parabolic kicks and ground events dive to the pad and bounce. Objects are chosen to suit
+   Steve's altitude at that point: aerial ones (gulls, balloons, banner planes, blimps, airliner
+   jetwash, fireworks) and ground ones that bounce him back up high (trampolines, bouncy castles,
+   tyre stacks, industrial fans) or barely (traffic cones, a hot dog cart, a mattress). How hard
+   he is hit scales with how much speed the plan takes away. Some flights end in a dumpster or a
+   hay truck, which stop him dead with no skid.
    Nothing static spawns within view of the cannon, so obstacles appear out of the haze among the
    city's ordinary traffic. Very short results become a misfire. The scenery explains the result;
    it never decides it.
@@ -66,24 +68,33 @@ client seed and the nonce, and the result card re-verifies the outcome from them
 `npm test` checks that the expected multiplier of every tier equals the configured RTP, and that
 flight plans always end exactly at the resolved distance.
 
-## The city
+## The city and the route
 
-`src/game/city.ts` generates an endless city along the avenue the plane flies over. It is laid out
-on a fixed grid (avenue, cross streets every block, five side streets each way) so nothing is ever
-placed in a road. Districts follow a seeded random walk: suburbs, residential blocks, commercial
-strips, downtown towers, parks, a river crossing with a bridge, industrial yards and an old town,
-with landmarks (clock tower, cathedral, stadium, a turning ferris wheel, obelisk plaza, triumphal
-arch over the avenue, domed hall, radio mast, water tower) every few blocks. Each chunk is baked
-into three merged meshes (plain, windowed, glass) so the whole view stays at a couple of hundred
-draw calls. The cash track is painted down the avenue in a slightly different shade of whatever
-the avenue is made of in that district.
+The flight follows a **route** (`src/game/route.ts`): a path along the city's street centrelines
+that runs straight for the first few blocks, then turns at intersections with rounded corners,
+always making progress away from the cannon. Steve, the camera, the cash track and every event are
+positioned by arc length along it. Streets the route uses become boulevards (wider, with sidewalks,
+lamps and trees); the block on the inside of each turn becomes a town square.
+
+The city itself (`src/game/city.ts`) is an endless grid of blocks over gently rolling **terrain**
+(`src/game/terrain.ts`): streets follow the ground, blocks sit on flat terraces with deep kerbs.
+Districts are noise patches rather than bands (suburbs, residential, commercial, downtown, parks,
+industrial yards, old town) and whole rows become rivers, which the route crosses on bridges and
+other streets simply stop at. Landmarks (clock tower, cathedral, stadium, a turning ferris wheel,
+obelisk plaza, triumphal arch over the boulevard, domed hall, radio mast, water tower) are
+scattered by hash. The world streams in macro tiles of 3×3 blocks around the route: full detail
+near the path, cheap massing beyond, each tile baked into three merged meshes. Traffic drives the
+streets, birds, balloons, blimps, airliners and helicopters cross the sky, and harmless filler
+obstacles sit around the city so a crane or a flock is not a tell.
 
 ## Steve and his wardrobe
 
 Steve is a jointed figure built from primitives (`src/game/steve.ts`) with a library of poses
-(cannonball tuck, superman, flying squirrel, flail, sprawl, sit, gingerly, brush, hero, triumph)
-that the engine blends between as the flight progresses, plus a tumbling spin for the launch,
-bounces and the wipeout. After touchdown he lies stunned with stars circling, sits up, stands
+(cannonball tuck, superman, flying squirrel, flail, sprawl, sit, gingerly, brush, hero, triumph).
+Each joint follows its pose with an under-damped spring and lags behind the body's acceleration,
+so he moves like a rag doll rather than snapping between poses; the engine adds a tumbling spin
+for the launch, bounces and the wipeout. His cape is a small Verlet cloth pinned at the shoulders
+with stiff bend constraints, so it streams and flutters like a superhero's rather than a bedsheet. After touchdown he lies stunned with stars circling, sits up, stands
 gingerly, brushes off both shoulders, shakes it off and strikes the pose before the result card.
 
 58 stunt suits across four tiers (Rookie $1, Pro $5, Daredevil $20, Legend $100) set his colours,

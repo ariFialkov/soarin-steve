@@ -1,18 +1,24 @@
 /**
- * The world: an infinite procedural city streamed in chunks ahead of the
- * plane, with the cash track painted down the avenue, ambient sky traffic,
- * and the flight plan's event objects.
+ * The world: a procedural city streamed in macro tiles around the flight
+ * route, the cash track painted along the route, moving traffic, ambient sky
+ * life, filler obstacles and the flight plan's event objects.
  */
 import * as THREE from 'three';
 import { Rng } from '../core/rng';
 import type { FlightPlan } from './flightPlan';
 import type { ParticleSystem } from './particles';
-import { GeoBatch, PLANE, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture } from './geobatch';
-import { CityPlan, GRID, LAYER, buildChunk, districtGround, type AnimatedObject, type Batches, type District } from './city';
+import { GeoBatch, PLANE, BOX, CYL, CYL_LO, SPHERE, SPHERE_LO, CONE, makeGlassTexture, makeWindowTexture, stripQuad } from './geobatch';
+import { MACRO, buildFarMacroTile, buildMacroTile, makeCityCtx, type AnimatedObject, type Batches, type BlockInfo, type CityCtx, type District } from './city';
+import { Route, PX, PZ, STREET_HALF, type RouteSample } from './route';
+import { Terrain } from './terrain';
 import { DECOY_KINDS, STREET_DECOY_KINDS, balloonEnvelope, makeEventObject, type EventObject } from './events';
 
-export const CHUNK = GRID.CHUNK;
-const AHEAD = 7;
+const MX = MACRO * PX, MZ = MACRO * PZ;
+const NEAR_R = 2;      // macro tiles each side of the route samples, full detail
+const FAR_R = 4;       // cheap massing beyond that
+const AHEAD = 520;     // route distance covered by the window
+const BEHIND = 90;
+const TRACK_STEP = 10;
 
 export interface WorldParams {
   seed: string;
@@ -20,13 +26,19 @@ export interface WorldParams {
   quality: 'low' | 'high';
 }
 
-interface Chunk {
-  index: number;
+interface Tile {
+  key: string;
+  far: boolean;
   group: THREE.Group;
   disposables: { dispose(): void }[];
-  labels: { s: number; mat: THREE.MeshBasicMaterial; color: string; stroke: string }[];
   animated: AnimatedObject[];
   decoys: EventObject[];
+}
+
+interface TrackPiece {
+  group: THREE.Group;
+  disposables: { dispose(): void }[];
+  label: { s: number; mat: THREE.MeshBasicMaterial; fill: string; stroke: string } | null;
 }
 
 function fmtCash(v: number): string {
@@ -59,7 +71,6 @@ function makeLabel(text: string, fill: string, stroke: string, w = 320, h = 96):
   return { tex, aspect: w / h };
 }
 
-// shared materials (one set for the whole world)
 let windowTex: THREE.CanvasTexture | null = null;
 let glassTex: THREE.CanvasTexture | null = null;
 function materials(): { solid: THREE.Material; facade: THREE.Material; glass: THREE.Material } {
@@ -72,50 +83,68 @@ function materials(): { solid: THREE.Material; facade: THREE.Material; glass: TH
   };
 }
 
+const TRACK_STYLE = {
+  asphalt: { track: '#777b81', line: '#5f6369', lane: '#b9a04a', cross: '#575b61', label: '#3e4147', stroke: '#9a9ea5' },
+  bridge: { track: '#969aa1', line: '#7a7e85', lane: '#a39f7a', cross: '#6e7279', label: '#4a4e55', stroke: '#aab0b8' },
+};
+
 export class World {
   readonly group = new THREE.Group();
-  private chunks = new Map<number, Chunk>();
+  readonly route: Route;
+  readonly terrain: Terrain;
+  readonly city: CityCtx;
+  private tiles = new Map<string, Tile>();
+  private track = new Map<number, TrackPiece>();
   private params: WorldParams;
-  private plan: FlightPlan | null = null;
-  private city: CityPlan;
   private eventObjects: EventObject[] = [];
   private particles: ParticleSystem;
   private elapsed = 0;
   private sky: THREE.Group;
   private mats = materials();
   private matCache = new Map<string, THREE.Material>();
+  private carGeo = { body: new THREE.BoxGeometry(1.7, 0.7, 3.8), cabin: new THREE.BoxGeometry(1.5, 0.55, 2.0), wheel: new THREE.CylinderGeometry(0.32, 0.32, 0.3, 8), busBody: new THREE.BoxGeometry(2.3, 2.6, 9), busGlass: new THREE.BoxGeometry(2.36, 0.9, 8.4) };
+  private sample: RouteSample = { x: 0, z: 0, tx: 0, tz: -1, nx: 1, nz: 0, heading: 0 };
+  private sample2: RouteSample = { x: 0, z: 0, tx: 0, tz: -1, nx: 1, nz: 0, heading: 0 };
 
   constructor(params: WorldParams, particles: ParticleSystem) {
     this.params = params;
     this.particles = particles;
-    this.city = new CityPlan(params.seed);
+    this.route = new Route(params.seed);
+    this.terrain = new Terrain(params.seed);
+    this.city = makeCityCtx(params.seed, this.route, this.terrain);
     this.sky = this.buildSky();
     this.group.add(this.sky);
-    // build the whole look-ahead up front so the first seconds of flight never stall
-    this.ensure(0, AHEAD, Infinity);
+    this.stream(0, Infinity);
   }
 
   get events(): EventObject[] { return this.eventObjects; }
 
-  districtAt(z: number): District {
-    return this.city.at(Math.max(0, Math.floor(-z / CHUNK))).district;
+  /** Ground height under a route position. */
+  groundAt(s: number): number {
+    const r = this.route.at(s, this.sample);
+    return this.terrain.at(r.x, r.z);
   }
 
-  /** Shared Lambert material by colour for animated objects. */
+  districtAt(s: number): District {
+    const r = this.route.at(s, this.sample);
+    return this.city.districtAt(Math.floor((r.x + r.nx * 2) / PX), Math.floor(-(r.z + r.nz * 2) / PZ));
+  }
+
   private mkMat = (c: string): THREE.Material => {
     let m = this.matCache.get(c);
     if (!m) { m = new THREE.MeshLambertMaterial({ color: c }); this.matCache.set(c, m); }
     return m;
   };
 
+  // ------------------------------------------------------------------ events
   setPlan(plan: FlightPlan, cashPerUnit: number): void {
     for (const eo of this.eventObjects) { this.group.remove(eo.group); eo.dispose(); }
     this.eventObjects = [];
-    this.plan = plan;
-    void this.plan;
     for (const e of plan.events) {
       const h = plan.h[Math.min(plan.h.length - 1, Math.round(e.t / plan.dt))];
       const eo = makeEventObject(e, h, this.particles);
+      const r = this.route.at(e.s);
+      eo.anchor(r.x, this.terrain.at(r.x, r.z), r.z, r.nx, r.nz, r.heading);
       this.eventObjects.push(eo);
       this.group.add(eo.group);
     }
@@ -124,133 +153,235 @@ export class World {
 
   setCashPerUnit(cashPerUnit: number): void {
     this.params.cashPerUnit = cashPerUnit;
-    for (const [, ch] of this.chunks) {
-      for (const l of ch.labels) {
-        const old = l.mat.map;
-        const { tex } = makeLabel(fmtCash(l.s * cashPerUnit), l.color, l.stroke);
-        l.mat.map = tex;
-        l.mat.needsUpdate = true;
-        old?.dispose();
-        ch.disposables.push(tex);
-      }
+    for (const [, p] of this.track) {
+      if (!p.label) continue;
+      const old = p.label.mat.map;
+      const { tex } = makeLabel(fmtCash(p.label.s * cashPerUnit), p.label.fill, p.label.stroke);
+      p.label.mat.map = tex;
+      p.label.mat.needsUpdate = true;
+      old?.dispose();
+      p.disposables.push(tex);
     }
   }
 
-  /** Keep chunks around z; builds at most `budget` new chunks per call (one per frame in play). */
-  ensure(z: number, ahead = AHEAD, budget = 1): void {
-    const idx = Math.max(0, Math.floor(-z / CHUNK));
+  // ------------------------------------------------------------------ streaming
+  /** Keep tiles and track around route position s. `budget` limits full-detail builds per call. */
+  stream(s: number, budget = 1): void {
+    this.route.ensure(s + AHEAD + 300);
+    const near = new Set<string>();
+    const far = new Set<string>();
+    for (let q = s - BEHIND; q <= s + AHEAD; q += 24) {
+      const r = this.route.at(Math.max(0, q), this.sample);
+      const I = Math.floor(r.x / MX), J = Math.floor(-r.z / MZ);
+      for (let di = -FAR_R; di <= FAR_R; di++) for (let dj = -FAR_R; dj <= FAR_R; dj++) {
+        const key = `${I + di}:${J + dj}`;
+        if (Math.abs(di) <= NEAR_R && Math.abs(dj) <= NEAR_R) { near.add(key); far.delete(key); }
+        else if (!near.has(key)) far.add(key);
+      }
+    }
     let built = 0;
-    for (let i = Math.max(-1, idx - 1); i <= idx + ahead && built < budget; i++) {
-      if (!this.chunks.has(i)) { this.buildChunk(i); built++; }
+    for (const key of near) {
+      const t = this.tiles.get(key);
+      if (t && !t.far) continue;
+      if (built >= budget) break;
+      if (t) this.disposeTile(t);
+      this.buildTile(key, false);
+      built++;
     }
-    for (const [i, ch] of this.chunks) {
-      if (i < idx - 2) {
-        this.group.remove(ch.group);
-        for (const d of ch.disposables) d.dispose();
-        for (const a of ch.animated) a.dispose();
-        for (const d of ch.decoys) d.dispose();
-        this.chunks.delete(i);
-      }
+    let farBuilt = 0;
+    for (const key of far) {
+      if (this.tiles.has(key)) continue;
+      if (farBuilt >= budget * 2) break;
+      this.buildTile(key, true);
+      farBuilt++;
     }
+    for (const [key, t] of this.tiles) {
+      if (!near.has(key) && !far.has(key)) this.disposeTile(t);
+    }
+    // cash track pieces along the route
+    const k0 = Math.max(0, Math.floor((s - BEHIND) / TRACK_STEP)), k1 = Math.floor((s + AHEAD) / TRACK_STEP);
+    for (let k = k0; k <= k1; k++) if (!this.track.has(k)) this.buildTrackPiece(k);
+    for (const [k, p] of this.track) if (k < k0 - 2 || k > k1 + 2) { this.group.remove(p.group); for (const d of p.disposables) d.dispose(); this.track.delete(k); }
   }
 
-  // ------------------------------------------------------------------ chunks
-  private buildChunk(i: number): void {
-    const rng = new Rng(`${this.params.seed}:avenue:${i}`);
+  private disposeTile(t: Tile): void {
+    this.group.remove(t.group);
+    for (const d of t.disposables) d.dispose();
+    for (const a of t.animated) a.dispose();
+    for (const d of t.decoys) d.dispose();
+    this.tiles.delete(t.key);
+  }
+
+  private buildTile(key: string, far: boolean): void {
+    const [I, J] = key.split(':').map(Number);
     const group = new THREE.Group();
     const disposables: { dispose(): void }[] = [];
-    const labels: Chunk['labels'] = [];
     const B: Batches = { solid: new GeoBatch(), facade: new GeoBatch(), glass: new GeoBatch() };
-    // chunk -1 (behind the launcher) is built in chunk 0's coordinates with a
-    // different seed and then translated backwards, so the grid lines up.
-    const ci = Math.max(0, i);
-    const district = this.city.at(ci).district;
-    const col = districtGround(district);
-    const z1 = -ci * CHUNK, z0 = z1 - CHUNK, zc = (z0 + z1) / 2;
-
-    const { animated } = buildChunk(B, this.city, ci, this.params.seed + (i < 0 ? ':behind' : ''), this.params.quality, this.mkMat);
-
-    // ---- avenue + cash track
-    if (district !== 'river') {
-      B.solid.add(PLANE, col.ave, 0, LAYER.STREET, zc, -Math.PI / 2, 0, 0, GRID.AVE * 2, CHUNK, 1);
-    }
-    B.solid.add(PLANE, col.track, 0, LAYER.TRACK, zc, -Math.PI / 2, 0, 0, 12, CHUNK, 1);
-    // lane markings
-    for (let z = z1 - 2; z > z0; z -= 4) {
-      B.solid.add(PLANE, col.lane, 0, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2, 1);
-      B.solid.add(PLANE, col.line, 3.5, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.16, 2, 1);
-      B.solid.add(PLANE, col.line, -3.5, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.16, 2, 1);
-    }
-    // cross markers every 10 units with cash labels either side
-    for (let s = Math.ceil(-z1 / 10) * 10; s < -z1 + CHUNK && i >= 0; s += 10) {
-      if (s <= 0) continue;
-      const z = -s;
-      B.solid.add(PLANE, col.cross, 0, LAYER.CROSS, z, -Math.PI / 2, 0, 0, 12, 0.36, 1);
-      const cash = fmtCash(s * this.params.cashPerUnit);
-      const { tex, aspect } = makeLabel(cash, col.label, col.labelStroke);
-      disposables.push(tex);
-      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
-      disposables.push(mat);
-      labels.push({ s, mat, color: col.label, stroke: col.labelStroke });
-      for (const side of [-1, 1]) {
-        const m = new THREE.Mesh(PLANE, mat);
-        const hgt = 2.0;
-        m.scale.set(hgt * aspect, hgt, 1);
-        m.rotation.x = -Math.PI / 2;
-        m.position.set(side * 3.5, LAYER.LABEL, z + 1.3);
-        group.add(m);
-      }
-    }
-
-    // ---- ambient sky traffic + filler obstacles that are not on the flight line
-    this.addAmbient(group, animated, rng, i, district);
+    const animated: AnimatedObject[] = [];
     const decoys: EventObject[] = [];
-    if (i >= 0) {
-      const n = rng.int(this.params.quality === 'high' ? 2 : 1, this.params.quality === 'high' ? 4 : 2);
-      for (let d = 0; d < n; d++) {
-        const kind = rng.pick(DECOY_KINDS);
-        const grounded = kind === 'crane' || kind === 'billboard' || kind === 'pigeons' || kind === 'thermal' || kind === 'vent';
-        const h = kind === 'pigeons' ? rng.range(6, 13) : kind === 'billboard' ? rng.range(10, 26) : grounded ? rng.range(16, 40) : rng.range(14, 75);
-        // fliers sit clearly off the centre line; grounded ones hug the kerbs like the real ones
-        const x = grounded ? rng.sign() * 0.5 : rng.sign() * rng.range(7, 34);
-        // never right beside the launcher
-        const ev = { t: Infinity, s: Math.max(i === 0 ? 46 : 0, -(z1 - rng.range(3, CHUNK - 3))), delta: -1, kind, lift: 0, x };
-        const eo = makeEventObject(ev, h, this.particles, true);
-        if (!grounded) eo.group.position.x = x; // the builders use e.x only as a small nudge; push fliers out to the side
-        decoys.push(eo);
-        group.add(eo.group);
-      }
-      // street-level filler on the cross streets (trampolines, bouncy castles, hot dog carts...)
-      if (district !== 'river' && rng.chance(0.7)) {
-        const kind = rng.pick(STREET_DECOY_KINDS);
-        const j = 2 * i + (rng.chance(0.5) ? 0 : 1);
-        const zs = -(16 + 32 * j);
-        const ev = { t: Infinity, s: -zs, delta: -1, kind, lift: 0, x: 0 };
-        const eo = makeEventObject(ev, 1, this.particles, true);
-        eo.group.position.x = rng.sign() * rng.range(14, 60);
-        decoys.push(eo);
-        group.add(eo.group);
-      }
+    if (far) {
+      buildFarMacroTile(B, this.city, I, J);
+    } else {
+      const res = buildMacroTile(B, this.city, I, J, this.params.quality, this.mkMat);
+      animated.push(...res.animated);
+      const rng = new Rng(`${this.params.seed}:tile:${key}`);
+      this.addTraffic(animated, rng, res.blocks);
+      this.addAmbient(animated, rng, I, J, res.blocks);
+      this.addDecoys(group, decoys, rng, I, J, res.blocks);
     }
-
-    // ---- bake
     const solid = B.solid.build(this.mats.solid);
     const facade = B.facade.build(this.mats.facade);
     const glass = B.glass.build(this.mats.glass);
     for (const m of [solid, facade, glass]) if (m) { group.add(m); disposables.push(m.geometry); }
     for (const a of animated) group.add(a.obj);
-    if (i < 0) group.position.z = CHUNK; // the mirrored chunk sits behind the launcher
-
     this.group.add(group);
-    this.chunks.set(i, { index: i, group, disposables, labels, animated, decoys });
+    this.tiles.set(key, { key, far, group, disposables, animated, decoys });
   }
 
-  private addAmbient(group: THREE.Group, animated: AnimatedObject[], rng: Rng, i: number, district: District): void {
-    void group;
-    const z1 = -i * CHUNK;
+  // ------------------------------------------------------------------ cash track
+  private buildTrackPiece(k: number): void {
+    const s0 = k * TRACK_STEP;
+    const group = new THREE.Group();
+    const disposables: { dispose(): void }[] = [];
+    const B = new GeoBatch();
+    const hAt = (x: number, z: number) => this.terrain.at(x, z);
+    const mid = this.route.at(s0 + 5, this.sample);
+    const onBridge = this.city.isRiverRow(Math.floor(-mid.z / PZ)) && Math.abs(mid.tz) > 0.5;
+    const st = onBridge ? TRACK_STYLE.bridge : TRACK_STYLE.asphalt;
+    // the lighter strip, in sub-segments so it follows the fillets
+    const sub = 4;
+    for (let i = 0; i < sub; i++) {
+      const a = this.route.at(s0 + (i / sub) * TRACK_STEP, this.sample);
+      const b = this.route.at(s0 + ((i + 1) / sub) * TRACK_STEP, this.sample2);
+      B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 6, hAt, 0.06), st.track);
+      // lane lines: centre (yellow) and the two outer lanes
+      if (i % 2 === 0) {
+        B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 0.09, hAt, 0.09), st.lane);
+        B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.09, 3.5), st.line);
+        B.addRaw(stripQuad(a.x, a.z, b.x, b.z, a.nx, a.nz, b.nx, b.nz, 0.08, hAt, 0.09, -3.5), st.line);
+      }
+    }
+    let label: TrackPiece['label'] = null;
+    if (k > 0) {
+      const r = this.route.at(s0, this.sample);
+      // cross marker
+      const ax = r.x - r.tx * 0.18, az = r.z - r.tz * 0.18, bx = r.x + r.tx * 0.18, bz = r.z + r.tz * 0.18;
+      B.addRaw(stripQuad(ax, az, bx, bz, r.nx, r.nz, r.nx, r.nz, 6, hAt, 0.11), st.cross);
+      const { tex, aspect } = makeLabel(fmtCash(s0 * this.params.cashPerUnit), st.label, st.stroke);
+      disposables.push(tex);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+      disposables.push(mat);
+      label = { s: s0, mat, fill: st.label, stroke: st.stroke };
+      for (const side of [-1, 1]) {
+        const m = new THREE.Mesh(PLANE, mat);
+        const hgt = 2.0;
+        m.scale.set(hgt * aspect, hgt, 1);
+        const px = r.x + r.nx * side * 3.5 - r.tx * 1.3, pz = r.z + r.nz * side * 3.5 - r.tz * 1.3;
+        m.position.set(px, hAt(px, pz) + 0.14, pz);
+        m.rotation.set(-Math.PI / 2, 0, 0);
+        m.rotateZ(r.heading);
+        group.add(m);
+      }
+    }
+    const mesh = B.build(this.mats.solid);
+    if (mesh) { group.add(mesh); disposables.push(mesh.geometry); }
+    this.group.add(group);
+    this.track.set(k, { group, disposables, label });
+  }
+
+  // ------------------------------------------------------------------ traffic
+  private addTraffic(animated: AnimatedObject[], rng: Rng, blocks: BlockInfo[]): void {
     const mk = this.mkMat;
-    // birds
-    if (rng.chance(0.6)) {
+    const terrain = this.terrain;
+    const n = this.params.quality === 'high' ? rng.int(5, 8) : rng.int(2, 4);
+    for (let i = 0; i < n; i++) {
+      const b = rng.pick(blocks);
+      if (b.district === 'river') continue;
+      // drive along the west street (z direction) or the north street (x direction) of this block
+      const alongZ = rng.chance(0.55);
+      const boulevard = alongZ ? b.wW > STREET_HALF : b.wN > STREET_HALF;
+      // no traffic through the launch tower
+      if (alongZ && b.ix === 0 && b.jz <= 0) continue;
+      const dir = rng.sign();
+      const laneOff = (boulevard ? 5.0 : 2.3) * dir;
+      const isBus = boulevard && rng.chance(0.25);
+      const g = new THREE.Group();
+      const col = rng.pick(['#f26b6b', '#5fb8e6', '#f2c14e', '#7bc96f', '#ffffff', '#3b3f47', '#e5679a', '#9a9ea5']);
+      // one merged mesh per vehicle keeps the scene graph small
+      const cb = new GeoBatch();
+      if (isBus) {
+        cb.add(this.carGeo.busBody, rng.pick(['#f2c14e', '#e2574c', '#3f5f8a']), 0, 1.4, 0);
+        cb.add(this.carGeo.busGlass, '#bfe9ff', 0, 1.9, 0);
+        for (const a of [-3, 3]) for (const bb of [-1.1, 1.1]) cb.add(this.carGeo.wheel, '#2b2b2b', bb, 0.45, a, 0, 0, Math.PI / 2, 1.4, 1, 1.4);
+      } else {
+        cb.add(this.carGeo.body, col, 0, 0.55, 0);
+        cb.add(this.carGeo.cabin, '#bfe9ff', 0, 1.15, 0);
+        for (const a of [-1.2, 1.2]) for (const bb of [-0.8, 0.8]) cb.add(this.carGeo.wheel, '#2b2b2b', bb, 0.32, a, 0, 0, Math.PI / 2);
+      }
+      const carMesh = cb.build(this.mats.solid);
+      if (carMesh) { carMesh.matrixAutoUpdate = true; g.add(carMesh); }
+      void mk;
+      const speed = (isBus ? 7 : rng.range(8, 14)) * dir;
+      // path: a line segment through the macro tile along the chosen street
+      const span = alongZ ? MZ : MX;
+      let u = rng.range(0, span);
+      const lineX = alongZ ? b.tile.x0 : 0, lineZ = alongZ ? 0 : b.tile.z1;
+      const x0 = alongZ ? lineX + laneOff : Math.floor(b.tile.x0 / MX) * MX;
+      const z1 = alongZ ? Math.ceil(b.tile.z1 / MZ) * MZ : lineZ - laneOff;
+      g.rotation.y = alongZ ? (dir < 0 ? 0 : Math.PI) : (dir > 0 ? -Math.PI / 2 : Math.PI / 2);
+      animated.push({
+        obj: g,
+        update(dt) {
+          u = (u + speed * dt + span * 10) % span;
+          const x = alongZ ? x0 : x0 + u;
+          const z = alongZ ? z1 - u : z1;
+          g.position.set(x, terrain.at(x, z) + 0.05, z);
+        },
+        dispose() { carMesh?.geometry.dispose(); },
+      });
+      g.position.set(x0, 0, z1);
+    }
+  }
+
+  // ------------------------------------------------------------------ decoys
+  private addDecoys(group: THREE.Group, decoys: EventObject[], rng: Rng, I: number, J: number, blocks: BlockInfo[]): void {
+    const cx = (I + 0.5) * MX, cz = -(J + 0.5) * MZ;
+    const n = this.params.quality === 'high' ? rng.int(1, 3) : rng.int(0, 1);
+    for (let d = 0; d < n; d++) {
+      const kind = rng.pick(DECOY_KINDS);
+      const grounded = kind === 'crane' || kind === 'billboard' || kind === 'pigeons' || kind === 'thermal' || kind === 'vent';
+      const h = kind === 'pigeons' ? rng.range(6, 13) : kind === 'billboard' ? rng.range(10, 26) : grounded ? rng.range(16, 40) : rng.range(14, 75);
+      const x = cx + rng.range(-MX * 0.45, MX * 0.45), z = cz + rng.range(-MZ * 0.45, MZ * 0.45);
+      if (Math.hypot(x, z) < 70) continue; // not around the cannon
+      const ev = { t: Infinity, s: 0, delta: -1, kind, lift: 0, x: grounded ? rng.sign() * 0.5 : rng.sign() * 0.3 };
+      const eo = makeEventObject(ev, h, this.particles, true);
+      eo.anchor(x, this.terrain.at(x, z), z, 1, 0, rng.range(0, Math.PI * 2));
+      decoys.push(eo);
+      group.add(eo.group);
+    }
+    // street-level filler on ordinary streets
+    if (rng.chance(0.7)) {
+      const b = rng.pick(blocks);
+      if (b.district !== 'river' && b.wN === STREET_HALF) {
+        const kind = rng.pick(STREET_DECOY_KINDS);
+        const x = rng.range(b.tile.x0 + 8, b.tile.x1 - 8), z = b.tile.z1;
+        if (Math.hypot(x, z) > 60) {
+          const ev = { t: Infinity, s: 0, delta: -1, kind, lift: 0, x: 0 };
+          const eo = makeEventObject(ev, 1, this.particles, true);
+          eo.anchor(x, this.terrain.at(x, z), z, 1, 0, Math.PI / 2);
+          decoys.push(eo);
+          group.add(eo.group);
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ ambient
+  private addAmbient(animated: AnimatedObject[], rng: Rng, I: number, J: number, blocks: BlockInfo[]): void {
+    const mk = this.mkMat;
+    const cx = (I + 0.5) * MX, cz = -(J + 0.5) * MZ;
+    const downtown = blocks.some(b => b.district === 'downtown');
+    if (rng.chance(0.5)) {
       const flock = new THREE.Group();
       const wings: THREE.Mesh[] = [];
       const n = rng.int(4, 9);
@@ -262,52 +393,47 @@ export class World {
         g.position.set((b - n / 2) * 1.4, Math.abs(b - n / 2) * 0.5, -Math.abs(b - n / 2) * 1.2);
         flock.add(g); wings.push(w1, w2);
       }
-      const side = rng.sign();
-      const y = rng.range(18, 60);
-      flock.position.set(side * rng.range(20, 120), y, z1 - rng.range(0, CHUNK));
+      const dir = rng.sign();
+      flock.position.set(cx + rng.range(-40, 40), rng.range(18, 60), cz + rng.range(-40, 40));
       const speed = rng.range(5, 9);
-      animated.push({ obj: flock, update(dt, t) { flock.position.x -= side * speed * dt; wings.forEach((w, k) => { w.rotation.z = (k % 2 ? -1 : 1) * Math.sin(t * 8 + k) * 0.6; }); }, dispose() {} });
+      animated.push({ obj: flock, update(dt, t) { flock.position.x -= dir * speed * dt; wings.forEach((w, k) => { w.rotation.z = (k % 2 ? -1 : 1) * Math.sin(t * 8 + k) * 0.6; }); }, dispose() {} });
     }
-    // hot-air balloons off to the side
-    if (rng.chance(0.35)) {
+    if (rng.chance(0.3)) {
       const g = new THREE.Group();
       const cols = [rng.pick(['#f2c14e', '#e5679a', '#5fb8e6', '#7bc96f']), '#ffffff'];
       const env = balloonEnvelope(cols); env.position.y = 7.5; g.add(env);
       const neck = new THREE.Mesh(CONE, mk(cols[0])); neck.scale.set(3.2, 2.2, 3.2); neck.rotation.x = Math.PI; neck.position.y = 3.6; g.add(neck);
       const basket = new THREE.Mesh(BOX, mk('#9a6b3c')); basket.scale.set(1.6, 1.2, 1.6); basket.position.y = 0.6; g.add(basket);
-      g.position.set(rng.sign() * rng.range(40, 150), rng.range(20, 70), z1 - rng.range(0, CHUNK));
+      g.position.set(cx + rng.range(-45, 45), rng.range(22, 70), cz + rng.range(-40, 40));
       const y0 = g.position.y;
-      animated.push({ obj: g, update(dt, t) { g.position.y = y0 + Math.sin(t * 0.5 + i) * 1.2; g.position.x += dt * 0.6; }, dispose() {} });
+      animated.push({ obj: g, update(dt, t) { g.position.y = y0 + Math.sin(t * 0.5 + I) * 1.2; g.position.x += dt * 0.6; }, dispose() {} });
     }
-    // blimp high up
-    if (rng.chance(0.12)) {
+    if (rng.chance(0.1)) {
       const b = new THREE.Group();
       const body = new THREE.Mesh(SPHERE, mk('#f4f4f4')); body.scale.set(7, 7, 20); b.add(body);
       const band = new THREE.Mesh(BOX, mk('#3f5f8a')); band.scale.set(7.2, 1.2, 12); b.add(band);
       const gondola = new THREE.Mesh(BOX, mk('#3b3f47')); gondola.scale.set(1.6, 1.4, 4); gondola.position.y = -3.6; b.add(gondola);
-      b.position.set(rng.sign() * rng.range(60, 160), rng.range(55, 90), z1 - rng.range(0, CHUNK));
+      b.position.set(cx + rng.range(-50, 50), rng.range(55, 90), cz + rng.range(-50, 50));
       b.rotation.y = rng.range(0, Math.PI);
       animated.push({ obj: b, update(dt) { b.position.z += dt * 0.8; }, dispose() {} });
     }
-    // airliner far away and high
-    if (rng.chance(0.1)) {
+    if (rng.chance(0.08)) {
       const g = new THREE.Group();
       const white = mk('#f4f6f8');
       const fus = new THREE.Mesh(CYL, white); fus.scale.set(2.2, 18, 2.2); fus.rotation.x = Math.PI / 2; g.add(fus);
       const wings = new THREE.Mesh(BOX, white); wings.scale.set(22, 0.25, 3.2); g.add(wings);
       const fin = new THREE.Mesh(BOX, mk('#e2574c')); fin.scale.set(0.25, 3.6, 3); fin.position.set(0, 1.8, 8.5); g.add(fin);
-      const side = rng.sign();
-      g.position.set(-side * 200, rng.range(90, 130), z1 - rng.range(0, CHUNK));
-      g.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
-      animated.push({ obj: g, update(dt) { g.position.x += side * dt * 25; }, dispose() {} });
+      const dir = rng.sign();
+      g.position.set(cx - dir * 200, rng.range(90, 130), cz + rng.range(-40, 40));
+      g.rotation.y = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+      animated.push({ obj: g, update(dt) { g.position.x += dir * dt * 25; }, dispose() {} });
     }
-    // helicopter over downtown
-    if (district === 'downtown' && rng.chance(0.3)) {
+    if (downtown && rng.chance(0.3)) {
       const g = new THREE.Group();
       const body = new THREE.Mesh(SPHERE_LO, mk('#3f5f8a')); body.scale.set(2.4, 2, 4.5); g.add(body);
       const tail = new THREE.Mesh(CYL_LO, mk('#3f5f8a')); tail.scale.set(0.5, 6, 0.5); tail.rotation.x = Math.PI / 2; tail.position.z = 4.5; g.add(tail);
       const rotor = new THREE.Mesh(BOX, mk('#222')); rotor.scale.set(9, 0.1, 0.4); rotor.position.y = 1.5; g.add(rotor);
-      g.position.set(rng.sign() * rng.range(25, 90), rng.range(40, 80), z1 - rng.range(0, CHUNK));
+      g.position.set(cx + rng.range(-40, 40), rng.range(40, 80), cz + rng.range(-40, 40));
       animated.push({ obj: g, update(dt, t) { rotor.rotation.y += dt * 30; g.position.x += Math.sin(t * 0.3) * dt * 4; g.position.z += dt * 2; }, dispose() {} });
     }
   }
@@ -338,13 +464,13 @@ export class World {
     glow.position.copy(sun.position).multiplyScalar(1.001);
     glow.lookAt(0, 0, 0);
     g.add(glow);
-    // far mountain silhouettes
+    // far mountain silhouettes all around
     const b = new GeoBatch();
     const rng = new Rng(this.params.seed + ':far');
-    for (let i = 0; i < 14; i++) {
-      const x = (i - 6.5) * 170 + rng.range(-40, 40);
-      const h = rng.range(90, 220);
-      b.add(CONE, rng.pick(['#bcd8e8', '#a9cce3', '#c9e0ee']), x, h / 2 - 20, -1000, 0, 0, 0, h * 1.8, h, h);
+    for (let i = 0; i < 26; i++) {
+      const a = (i / 26) * Math.PI * 2 + rng.range(-0.08, 0.08);
+      const h = rng.range(90, 230);
+      b.add(CONE, rng.pick(['#bcd8e8', '#a9cce3', '#c9e0ee']), Math.cos(a) * 1050, h / 2 - 25, Math.sin(a) * 1050, 0, 0, 0, h * 1.8, h, h);
     }
     const m = b.build(new THREE.MeshBasicMaterial({ vertexColors: true, fog: false }));
     if (m) g.add(m);
@@ -352,36 +478,33 @@ export class World {
   }
 
   // ------------------------------------------------------------------ frame
-  update(dt: number, planeZ: number, cameraZ: number, cameraY: number, planTime: number, hideNearCamera = true): void {
+  update(dt: number, s: number, camera: THREE.Vector3, planTime: number, hideNearCamera = true): void {
     this.elapsed += dt;
-    this.ensure(planeZ);
-    this.sky.position.set(0, Math.max(0, cameraY - 60), cameraZ);
-    for (const [, ch] of this.chunks) {
-      for (const a of ch.animated) a.update(dt, this.elapsed);
-      for (const d of ch.decoys) {
-        const dz = d.group.position.z - cameraZ;
-        d.group.visible = !hideNearCamera || !(dz > -2 && dz < 3.5);
-        if (Math.abs(dz) < 450) d.update(dt, this.elapsed);
+    this.stream(s);
+    this.sky.position.set(camera.x, Math.max(0, camera.y - 60), camera.z);
+    for (const [, t] of this.tiles) {
+      for (const a of t.animated) a.update(dt, this.elapsed);
+      for (const d of t.decoys) {
+        const dz = d.group.position.distanceTo(camera);
+        d.group.visible = !hideNearCamera || dz > 4;
+        if (dz < 450) d.update(dt, this.elapsed);
       }
     }
     for (const eo of this.eventObjects) {
-      const dz = eo.group.position.z - cameraZ;
-      eo.group.visible = !hideNearCamera || !(dz > -2 && dz < 3.5);
+      const dist = eo.group.position.distanceTo(camera);
+      eo.group.visible = !hideNearCamera || dist > 4;
       eo.approach(eo.event.t - planTime);
-      if (Math.abs(eo.group.position.z - planeZ) < 450) eo.update(dt, this.elapsed);
+      if (dist < 500) eo.update(dt, this.elapsed);
     }
   }
 
   dispose(): void {
-    for (const [, ch] of this.chunks) {
-      this.group.remove(ch.group);
-      for (const d of ch.disposables) d.dispose();
-      for (const a of ch.animated) a.dispose();
-      for (const d of ch.decoys) d.dispose();
-    }
-    this.chunks.clear();
+    for (const [, t] of this.tiles) this.disposeTile(t);
+    for (const [, p] of this.track) { this.group.remove(p.group); for (const d of p.disposables) d.dispose(); }
+    this.track.clear();
     for (const eo of this.eventObjects) eo.dispose();
     for (const m of this.matCache.values()) m.dispose();
+    for (const g of Object.values(this.carGeo)) g.dispose();
     this.sky.traverse(o => { const mm = o as THREE.Mesh; if (mm.geometry) mm.geometry.dispose(); if (mm.material) (mm.material as THREE.Material).dispose(); });
     this.mats.solid.dispose(); this.mats.facade.dispose(); this.mats.glass.dispose();
   }

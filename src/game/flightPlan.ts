@@ -213,44 +213,26 @@ export function buildFlightPlan(opts: {
   while (ei < events.length) { events[ei].s = L; ei++; }
   sArr[N - 1] = L; vArr[N - 1] = 0;
 
-  // Height profile: a smooth arc plus bumps at events, touching down just before the end.
+  // Height profile: one clean ballistic parabola from the muzzle over the apex to the touchdown.
+  // Aerial events add parabolic bumps (a vertical kick that gravity brings back), ground events
+  // dive to the pad and bounce. Everything is relative to the ground under the route.
   const h0 = LAUNCH_H + 3.6;
   const peak = 2 + (8 + 16 * opts.angle) * Math.min(1, L / 150) + Math.min(40, L / 32);
   const landT = endingFinal === 'sprawl' ? Math.max(T * 0.86, T - 1.8) : T;
   const groundH = endingFinal === 'dumpster' ? 1.6 : endingFinal === 'hay' ? 2.6 : 0.3;
-  const styleLift = opts.style === 'swoop' ? 1.25 : opts.style === 'flutter' ? 0.8 : 1;
+  const styleLift = opts.style === 'swoop' ? 1.2 : opts.style === 'flutter' ? 0.85 : 1;
+  // parabola h(t) = h0 + b t - q² t² with apex h0 + peak·styleLift and h(landT) = groundH
+  const pk = peak * styleLift;
+  const q = (Math.sqrt(pk) + Math.sqrt(pk + h0 - groundH)) / landT;
+  const bq = 2 * q * Math.sqrt(pk);
   for (let i = 0; i < N; i++) {
     const t = i * dt;
-    const u = Math.min(1, t / T);
-    // glide down from the roof while the launch arc plays out on top of it
-    let h = 1.8 + (h0 - 1.8) * Math.pow(1 - u, 1.6) + peak * Math.sin(Math.PI * Math.min(1, u * 1.08)) * styleLift;
-    for (const e of events) {
-      const dtE = t - e.t;
-      if (dtE > 0 && dtE < 3) {
-        const w = Math.sin(Math.PI * dtE / 3);
-        h += e.lift * w;
-      }
-    }
-    if (t > landT) {
-      const q = Math.min(1, (t - landT) / Math.max(0.01, T - landT));
-      const ease = 1 - Math.pow(1 - q, 2);
-      h = h * (1 - ease) + 0.3 * ease;
-    }
-    hArr[i] = Math.max(0.3, h);
+    let h: number;
+    if (t <= landT) h = h0 + bq * t - q * q * t * t;
+    else h = groundH;
+    hArr[i] = Math.max(groundH, h);
   }
-  // glide into the landing: blend the last stretch down to the landing height
-  {
-    const win = endingFinal === 'sprawl' ? 2 : 1.6;
-    const target = endingFinal === 'sprawl' ? hArr[Math.min(N - 1, Math.round(landT / dt))] : groundH;
-    for (let i = 0; i < N; i++) {
-      const t = i * dt;
-      if (t > landT - win && t <= landT) {
-        const q = (t - (landT - win)) / win;
-        const w = endingFinal === 'sprawl' ? q * q * 0.5 : q * q * (3 - 2 * q);
-        hArr[i] = hArr[i] * (1 - w) + target * w;
-      } else if (t > landT && endingFinal !== 'sprawl') hArr[i] = groundH;
-    }
-  }
+  if (endingFinal === 'sprawl') for (let i = 0; i < N; i++) if (i * dt > landT) hArr[i] = 0.3;
 
   // Now that the height profile exists, pick an object that makes sense at each event's altitude.
   let lastKind: EventKind | null = null;
@@ -270,8 +252,22 @@ export function buildFlightPlan(opts: {
     lastKind = e.kind;
   });
 
-  // Ground events: dip down to the pad and bounce back up (boosts high, obstacles barely).
+  // Aerial events: a vertical kick that gravity brings back (a small parabolic bump, up or down).
   const base = Float32Array.from(hArr);
+  events.forEach(e => {
+    if (GROUND_KINDS.has(e.kind)) return;
+    const dur = e.delta > 0 ? 3.2 : 2.4;
+    const amp = e.delta > 0 ? rng.range(2.5, 5.5) : -rng.range(1.2, 2.6);
+    e.lift = amp;
+    const i0 = Math.max(0, Math.floor(e.t / dt)), i1 = Math.min(N - 1, Math.ceil((e.t + dur) / dt));
+    for (let i = i0; i <= i1; i++) {
+      const q2 = (i * dt - e.t) / dur;           // 0..1
+      const bump = 4 * q2 * (1 - q2);             // parabola, 0 at both ends, 1 in the middle
+      hArr[i] = Math.max(groundH, hArr[i] + amp * bump);
+    }
+  });
+
+  // Ground events: dive to the pad and bounce back up (boosts high, obstacles barely).
   events.forEach((e, idx) => {
     const g = GROUND_KINDS.get(e.kind);
     if (!g) return;
@@ -283,17 +279,17 @@ export function buildFlightPlan(opts: {
     const rebound = rng.range(g.rebound[0], g.rebound[1]);
     e.lift = rebound;
     const i0 = Math.max(0, Math.floor((e.t - wb) / dt)), i1 = Math.min(N - 1, Math.ceil((e.t + wa) / dt));
-    const hStart = base[i0], hEnd = base[i1];
+    const hStart = hArr[i0], hEnd = hArr[i1];
     for (let i = i0; i <= i1; i++) {
       const t = i * dt;
       if (t <= e.t) {
-        const q = Math.min(1, Math.max(0, (t - (e.t - wb)) / wb));
-        const w = q * q * (3 - 2 * q);
-        hArr[i] = hStart * (1 - w) + g.padH * w;
+        // dive: a parabola from hStart (level) down to the pad
+        const q2 = Math.min(1, Math.max(0, (t - (e.t - wb)) / wb));
+        hArr[i] = hStart + (g.padH - hStart) * q2 * q2;
       } else {
-        const q = Math.min(1, (t - e.t) / wa);
-        const w = q * q * (3 - 2 * q);
-        hArr[i] = g.padH * (1 - w) + hEnd * w + rebound * Math.sin(Math.PI * q);
+        // bounce: launched up off the pad, gravity brings it back to the base line
+        const q2 = Math.min(1, (t - e.t) / wa);
+        hArr[i] = g.padH + (hEnd - g.padH) * q2 + rebound * 4 * q2 * (1 - q2);
       }
     }
   });

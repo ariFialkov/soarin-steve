@@ -10,8 +10,10 @@
 import * as THREE from 'three';
 import { Rng } from '../core/rng';
 import { LAUNCH_H } from './constants';
+import { Route, PX, PZ, BOULEVARD_HALF, BOULEVARD_KERB, STREET_HALF } from './route';
+import type { Terrain } from './terrain';
 export { LAUNCH_H };
-import { BOX, CONE, CYL, CYL_LO, DISC, HEMI, PLANE, PRISM, PYRAMID, SPHERE_LO, TORUS, WEDGE, GeoBatch, windowBox } from './geobatch';
+import { BOX, CONE, CYL, CYL_LO, DISC, HEMI, PLANE, PRISM, PYRAMID, SPHERE_LO, TORUS, WEDGE, GeoBatch, windowBox, terrainQuad } from './geobatch';
 
 export type District = 'suburb' | 'residential' | 'commercial' | 'downtown' | 'park' | 'river' | 'industrial' | 'oldtown';
 export type Landmark = 'clocktower' | 'cathedral' | 'stadium' | 'ferris' | 'obelisk' | 'arch' | 'dome' | 'mast' | 'watertower';
@@ -29,7 +31,6 @@ export const GRID = {
 };
 /** Vertical layering so coplanar surfaces never fight: streets sit above the base, paint above streets, lot ground above kerbs. */
 export const LAYER = { STREET: 0.03, TRACK: 0.06, MARK: 0.09, CROSS: 0.11, LABEL: 0.14, KERB: 0.15, LOT: 0.2, DETAIL: 0.24, DETAIL2: 0.27 };
-export const GRID_END_X = GRID.KERB + GRID.BLOCKS_X * (GRID.BLOCK_X + GRID.STREET_X) - GRID.STREET_X; // 181.5
 
 export interface Rect { x0: number; x1: number; z0: number; z1: number } // z0 < z1 (z0 is further ahead)
 
@@ -73,97 +74,7 @@ export const PAL = {
   cars: ['#f26b6b', '#5fb8e6', '#f2c14e', '#7bc96f', '#ffffff', '#3b3f47', '#e5679a', '#9a9ea5'],
 };
 
-// ---------------------------------------------------------------- city plan
-interface ChunkPlan {
-  district: District;
-  landmark: Landmark | null;
-  landmarkSide: 1 | -1;
-  landmarkBlock: 0 | 1;      // which of the chunk's two blocks
-}
-
-const RUN_LENGTH: Record<District, [number, number]> = {
-  suburb: [2, 4], residential: [2, 4], commercial: [2, 3], downtown: [2, 4],
-  park: [1, 2], river: [1, 1], industrial: [2, 3], oldtown: [2, 3],
-};
-
-const NEXT: Record<District, District[]> = {
-  suburb: ['residential', 'residential', 'park', 'commercial', 'industrial', 'oldtown'],
-  residential: ['commercial', 'commercial', 'park', 'oldtown', 'downtown', 'river'],
-  commercial: ['downtown', 'downtown', 'residential', 'park', 'river', 'oldtown'],
-  downtown: ['commercial', 'park', 'river', 'residential', 'industrial'],
-  park: ['residential', 'downtown', 'oldtown', 'suburb', 'commercial'],
-  river: ['downtown', 'oldtown', 'industrial', 'park', 'commercial', 'residential'],
-  industrial: ['suburb', 'residential', 'river', 'commercial'],
-  oldtown: ['commercial', 'park', 'residential', 'river', 'downtown'],
-};
-
-const LANDMARKS_FOR: Record<District, Landmark[]> = {
-  suburb: ['watertower', 'stadium'], residential: ['watertower', 'clocktower', 'stadium'],
-  commercial: ['clocktower', 'arch', 'dome'], downtown: ['dome', 'mast', 'arch', 'ferris'],
-  park: ['ferris', 'obelisk', 'stadium'], river: [], industrial: ['mast', 'watertower'],
-  oldtown: ['cathedral', 'clocktower', 'obelisk'],
-};
-
-export class CityPlan {
-  private chunks: ChunkPlan[] = [];
-  private rng: Rng;
-  private current: District = 'suburb';
-  private remaining = 2;
-  private sinceLandmark = 2;
-  private sinceRiver = 10;
-
-  constructor(seed: string) {
-    this.rng = new Rng(seed + ':city');
-  }
-
-  at(i: number): ChunkPlan {
-    i = Math.max(0, i);
-    while (this.chunks.length <= i) this.chunks.push(this.next());
-    return this.chunks[i];
-  }
-
-  private next(): ChunkPlan {
-    const rng = this.rng;
-    if (this.remaining <= 0) {
-      let candidates = NEXT[this.current];
-      if (this.sinceRiver < 4) candidates = candidates.filter(d => d !== 'river');
-      let d = rng.pick(candidates);
-      if (d === this.current) d = rng.pick(candidates);
-      this.current = d;
-      const [a, b] = RUN_LENGTH[d];
-      this.remaining = rng.int(a, b);
-    }
-    this.remaining--;
-    this.sinceRiver = this.current === 'river' ? 0 : this.sinceRiver + 1;
-    let landmark: Landmark | null = null;
-    const options = LANDMARKS_FOR[this.current];
-    this.sinceLandmark++;
-    if (options.length && this.sinceLandmark >= 4 && rng.chance(0.3 + (this.sinceLandmark - 4) * 0.12)) {
-      landmark = rng.pick(options);
-      this.sinceLandmark = 0;
-    }
-    return { district: this.current, landmark, landmarkSide: rng.sign() as 1 | -1, landmarkBlock: rng.chance(0.5) ? 0 : 1 };
-  }
-}
-
 // ---------------------------------------------------------------- helpers
-function blockRectX(k: number, side: 1 | -1): [number, number] {
-  const x0 = GRID.KERB + k * (GRID.BLOCK_X + GRID.STREET_X);
-  const x1 = x0 + GRID.BLOCK_X;
-  return side > 0 ? [x0, x1] : [-x1, -x0];
-}
-
-/** z range (z0 < z1) of block row j (j = 0 is nearest the launcher). */
-export function blockRowZ(j: number): [number, number] {
-  const z1 = -(20 + 32 * j);
-  return [z1 - GRID.BLOCK_Z, z1];
-}
-
-/** z centre of the cross street just before block row j. */
-export function crossStreetZ(j: number): number {
-  return -(16 + 32 * j);
-}
-
 function inset(r: Rect, m: number): Rect {
   return { x0: r.x0 + m, x1: r.x1 - m, z0: r.z0 + m, z1: r.z1 - m };
 }
@@ -709,10 +620,16 @@ function landmark(B: Batches, rng: Rng, kind: Landmark, r: Rect, side: 1 | -1, a
 }
 
 // ---------------------------------------------------------------- street furniture
-function lamp(B: Batches, x: number, z: number): void {
-  B.solid.add(CYL_LO, '#4b515b', x, 0.15 + 3, z, 0, 0, 0, LAYER.LOT, 6, 0.16);
-  B.solid.box('#4b515b', x + (x > 0 ? -0.6 : 0.6), 0.15 + 6, z, 1.3, 0.14, 0.14);
-  B.solid.box('#fff3b0', x + (x > 0 ? -1.1 : 1.1), 0.15 + 5.85, z, 0.6, 0.3, 0.5);
+function lamp(B: Batches, x: number, z: number, side = 0, alongX = false): void {
+  B.solid.add(CYL_LO, '#4b515b', x, 0.15 + 3, z, 0, 0, 0, 0.16, 6, 0.16);
+  if (alongX) {
+    B.solid.box('#4b515b', x, 0.15 + 6, z, 0.14, 0.14, 1.3);
+    B.solid.box('#fff3b0', x, 0.15 + 5.85, z, 0.5, 0.3, 0.6);
+  } else {
+    const dir = side !== 0 ? -side : (x > 0 ? -1 : 1);
+    B.solid.box('#4b515b', x + dir * 0.6, 0.15 + 6, z, 1.3, 0.14, 0.14);
+    B.solid.box('#fff3b0', x + dir * 1.1, 0.15 + 5.85, z, 0.6, 0.3, 0.5);
+  }
 }
 
 function trafficLight(B: Batches, x: number, z: number, side: number): void {
@@ -735,150 +652,252 @@ export function car(B: Batches, rng: Rng, x: number, z: number, alongZ: boolean,
   }
 }
 
-function bus(B: Batches, rng: Rng, x: number, z: number): void {
+export function bus(B: Batches, rng: Rng, x: number, z: number): void {
   const c = rng.pick(['#f2c14e', '#e2574c', '#3f5f8a']);
   B.solid.box(c, x, 1.4, z, 2.3, 2.6, 9);
   B.solid.box('#bfe9ff', x, 1.9, z, 2.36, 0.9, 8.4);
   for (const a of [-3, 3]) for (const b of [-1.1, 1.1]) B.solid.add(CYL_LO, '#2b2b2b', x + b, 0.45, z + a, 0, 0, Math.PI / 2, 0.9, 0.3, 0.9);
 }
 
-// ---------------------------------------------------------------- chunk assembly
-export interface ChunkBuildResult {
-  animated: AnimatedObject[];
+// ---------------------------------------------------------------- city context
+export const MACRO = 3; // blocks per macro tile side
+
+export interface CityCtx {
+  seed: string;
+  route: Route;
+  terrain: Terrain;
+  isRiverRow(jz: number): boolean;
+  districtAt(ix: number, jz: number): District;
+  landmarkAt(ix: number, jz: number): Landmark | null;
 }
 
-/**
- * Build one chunk's worth of streets, blocks and buildings into the batches.
- * The avenue (cash track) is drawn by the caller because it depends on the
- * stake; this function draws everything else.
- */
-export function buildChunk(B: Batches, plan: CityPlan, i: number, seed: string, quality: 'low' | 'high', mkMat: (c: string) => THREE.Material): ChunkBuildResult {
-  const rng = new Rng(`${seed}:chunk:${i}`);
-  const cp = plan.at(i);
-  const district = cp.district;
-  const z1 = -i * GRID.CHUNK, z0 = z1 - GRID.CHUNK, zc = (z0 + z1) / 2;
+function hash2(ix: number, jz: number, salt: number): number {
+  let h = (ix * 374761393 + jz * 668265263 + salt * 2246822519) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Smooth value noise on the block grid. */
+export function valueNoise(x: number, y: number, salt: number): number {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const fx = x - x0, fy = y - y0;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = hash2(x0, y0, salt), b = hash2(x0 + 1, y0, salt), c = hash2(x0, y0 + 1, salt), d = hash2(x0 + 1, y0 + 1, salt);
+  return (a * (1 - sx) + b * sx) * (1 - sy) + (c * (1 - sx) + d * sx) * sy;
+}
+
+export function makeCityCtx(seed: string, route: Route, terrain: Terrain): CityCtx {
+  const rng = new Rng(seed + ':rivers');
+  const riverRows = new Set<number>();
+  let jz = 9 + rng.int(0, 5);
+  while (jz < 600) { riverRows.add(jz); jz += rng.int(11, 19); }
+  const salt = new Rng(seed + ':districts').int(1, 1e6);
+  const districtAt = (ix: number, jz: number): District => {
+    if (riverRows.has(jz)) return 'river';
+    if (jz < 3 && Math.abs(ix) < 4) return jz < 1 || Math.abs(ix) > 1 ? 'suburb' : 'residential';
+    const density = valueNoise(ix / 5.5 + 100, jz / 5.5 + 100, salt);
+    const special = valueNoise(ix / 4 + 300, jz / 4 + 300, salt + 1);
+    if (special > 0.8) return 'park';
+    if (special < 0.13) return 'industrial';
+    if (special > 0.62 && special < 0.7) return 'oldtown';
+    if (density < 0.3) return 'suburb';
+    if (density < 0.55) return 'residential';
+    if (density < 0.78) return 'commercial';
+    return 'downtown';
+  };
+  const landmarkAt = (ix: number, jz: number): Landmark | null => {
+    if (riverRows.has(jz) || (jz <= 1 && Math.abs(ix) <= 1)) return null;
+    if (hash2(ix, jz, salt + 7) > 1 / 14) return null;
+    const d = districtAt(ix, jz);
+    const options = LANDMARKS_FOR[d];
+    if (!options.length) return null;
+    return options[Math.floor(hash2(ix, jz, salt + 8) * options.length)];
+  };
+  return { seed, route, terrain, isRiverRow: j => riverRows.has(j), districtAt, landmarkAt };
+}
+
+const LANDMARKS_FOR: Record<District, Landmark[]> = {
+  suburb: ['watertower', 'stadium'], residential: ['watertower', 'clocktower', 'stadium'],
+  commercial: ['clocktower', 'arch', 'dome'], downtown: ['dome', 'mast', 'arch', 'ferris'],
+  park: ['ferris', 'obelisk', 'stadium'], river: [], industrial: ['mast', 'watertower'],
+  oldtown: ['cathedral', 'clocktower', 'obelisk'],
+};
+
+// ---------------------------------------------------------------- block geometry
+export interface BlockInfo {
+  ix: number; jz: number;
+  tile: Rect;        // the full tile including its share of the streets
+  rect: Rect;        // buildable block (inside the kerbs)
+  wW: number; wE: number; wN: number; wS: number;   // half widths of the bounding streets
+  e: number;         // block elevation
+  district: District;
+}
+
+export function blockInfo(ctx: CityCtx, ix: number, jz: number): BlockInfo {
+  const r = ctx.route;
+  const half = (b: boolean) => (b ? BOULEVARD_KERB : STREET_HALF);
+  const wW = half(r.isBoulevardV(ix, jz)), wE = half(r.isBoulevardV(ix + 1, jz));
+  const wN = half(r.isBoulevardH(jz, ix)), wS = half(r.isBoulevardH(jz + 1, ix));
+  const tile: Rect = { x0: ix * PX, x1: (ix + 1) * PX, z0: -(jz + 1) * PZ, z1: -jz * PZ };
+  const rect: Rect = { x0: tile.x0 + wW, x1: tile.x1 - wE, z0: tile.z0 + wS, z1: tile.z1 - wN };
+  const e = ctx.terrain.at((rect.x0 + rect.x1) / 2, (rect.z0 + rect.z1) / 2);
+  return { ix, jz, tile, rect, wW, wE, wN, wS, e, district: ctx.districtAt(ix, jz) };
+}
+
+// ---------------------------------------------------------------- tile assembly
+export interface TileBuildResult { animated: AnimatedObject[]; blocks: BlockInfo[] }
+
+function setOffset(B: Batches, y: number): void {
+  B.solid.offset.set(0, y, 0); B.facade.offset.set(0, y, 0); B.glass.offset.set(0, y, 0);
+}
+
+/** Build one macro tile (MACRO × MACRO blocks) in full detail. */
+export function buildMacroTile(B: Batches, ctx: CityCtx, I: number, J: number, quality: 'low' | 'high', mkMat: (c: string) => THREE.Material): TileBuildResult {
+  void quality;
   const animated: AnimatedObject[] = [];
-  const W = 620;
+  const blocks: BlockInfo[] = [];
+  const hAt = (x: number, z: number) => ctx.terrain.at(x, z);
+  for (let ix = I * MACRO; ix < (I + 1) * MACRO; ix++) {
+    for (let jz = J * MACRO; jz < (J + 1) * MACRO; jz++) {
+      const b = blockInfo(ctx, ix, jz);
+      blocks.push(b);
+      const rng = new Rng(`${ctx.seed}:b:${ix}:${jz}`);
+      setOffset(B, 0);
+      if (b.district === 'river') { buildRiverTile(B, ctx, b, rng); continue; }
 
-  if (district === 'river') {
-    buildRiver(B, rng, i);
-    return { animated };
-  }
+      // ---- base ground under the whole tile, then the streets on its west and north sides
+      const base = b.district === 'suburb' || b.district === 'park' ? PAL.grass : b.district === 'industrial' ? '#b3aea4' : b.district === 'oldtown' ? PAL.pavers : PAL.sidewalk;
+      B.solid.addRaw(terrainQuad(b.tile.x0, b.tile.x1, b.tile.z0, b.tile.z1, hAt, -0.02, 3, 3), base);
+      B.solid.addRaw(terrainQuad(b.tile.x0 - b.wW, b.tile.x0 + b.wW, b.tile.z0, b.tile.z1, hAt, LAYER.STREET, 1, 6), PAL.asphalt);
+      B.solid.addRaw(terrainQuad(b.tile.x0, b.tile.x1, b.tile.z1 - b.wN, b.tile.z1 + b.wN, hAt, LAYER.STREET, 6, 1), PAL.asphalt);
+      // lane dashes on ordinary streets
+      if (b.wW === STREET_HALF) for (let z = b.tile.z1 - 2; z > b.tile.z0; z -= 5) B.solid.add(PLANE, PAL.laneWhite, b.tile.x0, hAt(b.tile.x0, z) + LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
+      if (b.wN === STREET_HALF) for (let x = b.tile.x0 + 2; x < b.tile.x1; x += 5) B.solid.add(PLANE, PAL.laneWhite, x, hAt(x, b.tile.z1) + LAYER.MARK, b.tile.z1, -Math.PI / 2, 0, 0, 2.4, 0.18, 1);
 
-  // ---- base ground + streets
-  const base = district === 'suburb' || district === 'park' ? PAL.grass : district === 'industrial' ? '#b3aea4' : district === 'oldtown' ? PAL.pavers : PAL.sidewalk;
-  B.solid.add(PLANE, base, 0, 0, zc, -Math.PI / 2, 0, 0, W * 2, GRID.CHUNK, 1);
-  // cross streets
-  for (const j of [2 * i, 2 * i + 1]) {
-    const zs = crossStreetZ(j);
-    B.solid.add(PLANE, PAL.asphalt, 0, LAYER.STREET, zs, -Math.PI / 2, 0, 0, GRID_END_X * 2 + 20, GRID.STREET_Z, 1);
-    // crosswalk across the avenue
-    for (const edge of [zs - 3.2, zs + 3.2]) for (let x = -6; x <= 6; x += 1.5) B.solid.add(PLANE, PAL.laneWhite, x, LAYER.MARK, edge, -Math.PI / 2, 0, 0, 0.8, 1.2, 1);
-    // traffic lights at the avenue corners
-    trafficLight(B, 10.2, zs + 4.6, -1);
-    trafficLight(B, -10.2, zs - 4.6, 1);
-  }
-  // side streets (parallel to the avenue)
-  for (let k = 0; k < GRID.BLOCKS_X; k++) {
-    const [, bx1] = blockRectX(k, 1);
-    const sx = bx1 + GRID.STREET_X / 2;
-    if (k < GRID.BLOCKS_X - 1) {
-      B.solid.add(PLANE, PAL.asphalt, sx, LAYER.STREET, zc, -Math.PI / 2, 0, 0, GRID.STREET_X, GRID.CHUNK, 1);
-      B.solid.add(PLANE, PAL.asphalt, -sx, LAYER.STREET, zc, -Math.PI / 2, 0, 0, GRID.STREET_X, GRID.CHUNK, 1);
-      for (let z = z1 - 2; z > z0; z -= 5) {
-        B.solid.add(PLANE, PAL.laneWhite, sx, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
-        B.solid.add(PLANE, PAL.laneWhite, -sx, LAYER.MARK, z, -Math.PI / 2, 0, 0, 0.18, 2.4, 1);
-      }
-    }
-  }
+      // ---- kerb slab (deep, to hide the slope beneath) + boulevard sidewalks
+      const r = b.rect;
+      B.solid.box(PAL.sidewalk, (r.x0 + r.x1) / 2, b.e - 4, (r.z0 + r.z1) / 2, r.x1 - r.x0, 8.3, r.z1 - r.z0);
+      const walks: Rect[] = [];
+      if (b.wW === BOULEVARD_KERB) walks.push({ x0: b.tile.x0 + BOULEVARD_HALF, x1: r.x0, z0: r.z0, z1: r.z1 });
+      if (b.wE === BOULEVARD_KERB) walks.push({ x0: r.x1, x1: b.tile.x1 - BOULEVARD_HALF, z0: r.z0, z1: r.z1 });
+      if (b.wN === BOULEVARD_KERB) walks.push({ x0: b.tile.x0 + (b.wW === BOULEVARD_KERB ? BOULEVARD_HALF : b.wW), x1: b.tile.x1 - (b.wE === BOULEVARD_KERB ? BOULEVARD_HALF : b.wE), z0: r.z1, z1: b.tile.z1 - BOULEVARD_HALF });
+      if (b.wS === BOULEVARD_KERB) walks.push({ x0: b.tile.x0 + (b.wW === BOULEVARD_KERB ? BOULEVARD_HALF : b.wW), x1: b.tile.x1 - (b.wE === BOULEVARD_KERB ? BOULEVARD_HALF : b.wE), z0: b.tile.z0 + BOULEVARD_HALF, z1: r.z0 });
+      for (const w of walks) B.solid.box(PAL.sidewalk2, (w.x0 + w.x1) / 2, b.e - 4, (w.z0 + w.z1) / 2, w.x1 - w.x0, 8.3, w.z1 - w.z0);
 
-  // ---- blocks
-  const dense = quality === 'high' ? GRID.BLOCKS_X : 3;
-  for (const j of [2 * i, 2 * i + 1]) {
-    const [bz0, bz1] = blockRowZ(j);
-    for (let k = 0; k < dense; k++) {
-      for (const side of [1, -1] as const) {
-        const [bx0, bx1] = blockRectX(k, side);
-        const rect: Rect = { x0: bx0, x1: bx1, z0: bz0, z1: bz1 };
-        // kerb slab
-        B.solid.box(PAL.sidewalk, (bx0 + bx1) / 2, 0.075, (bz0 + bz1) / 2, GRID.BLOCK_X, 0.15, GRID.BLOCK_Z);
-        const lot = inset(rect, GRID.SIDEWALK);
-        const isLandmark = cp.landmark && k === 0 && side === cp.landmarkSide && (j - 2 * i) === cp.landmarkBlock;
-        if (isLandmark) {
-          landmark(B, rng, cp.landmark!, lot, side, animated, mkMat);
-          continue;
-        }
-        switch (district) {
+      // ---- the block itself, lifted onto its elevation
+      setOffset(B, b.e);
+      const lot = inset(r, GRID.SIDEWALK);
+      const landmark = ctx.landmarkAt(ix, jz);
+      if (ctx.route.isPlaza(ix, jz)) plazaBlock(B, rng, lot);
+      else if (landmark) landmarkAt(B, rng, landmark, lot, animated, mkMat);
+      else {
+        switch (b.district) {
           case 'suburb': suburbBlock(B, rng, lot); break;
           case 'residential': if (rng.chance(0.3)) suburbBlock(B, rng, lot); else ringBlock(B, rng, lot, 'residential'); break;
           case 'commercial': ringBlock(B, rng, lot, 'commercial'); break;
-          case 'downtown': if (k >= 3 && rng.chance(0.5)) ringBlock(B, rng, lot, 'commercial'); else downtownBlock(B, rng, lot); break;
-          case 'park': if (k === 0 || rng.chance(0.35)) parkBlock(B, rng, lot, k === 0); else ringBlock(B, rng, lot, 'residential'); break;
+          case 'downtown': downtownBlock(B, rng, lot); break;
+          case 'park': parkBlock(B, rng, lot, true); break;
           case 'industrial': industrialBlock(B, rng, lot); break;
           case 'oldtown': if (rng.chance(0.12)) church(B, rng, lot); else ringBlock(B, rng, lot, 'oldtown'); break;
           default: break;
         }
       }
-    }
-    // cars parked along the cross street
-    const zs = crossStreetZ(j);
-    for (let n = 0; n < rng.int(3, 7); n++) {
-      const side = rng.sign();
-      car(B, rng, side * rng.range(12, GRID_END_X - 6), zs + rng.sign() * 2.6, false, LAYER.STREET);
-    }
-  }
-
-  // ---- avenue sidewalks + furniture
-  for (const j of [2 * i, 2 * i + 1]) {
-    const [bz0, bz1] = blockRowZ(j);
-    for (const side of [1, -1] as const) {
-      B.solid.box(PAL.sidewalk2, side * (GRID.AVE + (GRID.KERB - GRID.AVE) / 2), 0.075, (bz0 + bz1) / 2, GRID.KERB - GRID.AVE, 0.15, GRID.BLOCK_Z);
-      lamp(B, side * 8.7, bz1 - 4);
-      lamp(B, side * 8.7, bz0 + 4);
-      if (district === 'suburb' || district === 'residential' || district === 'park' || district === 'oldtown') {
-        B.solid.box('#9a948a', side * 8.4, 0.45, (bz0 + bz1) / 2, 1.6, 0.6, 1.6);
-        tree(B, rng, side * 8.4, (bz0 + bz1) / 2, 0.7, 0.75);
-      } else if (rng.chance(0.4)) {
-        // bus shelter / kiosk
-        B.solid.box('#8fb8d8', side * 8.5, 0.15 + 2.4, (bz0 + bz1) / 2, 1.8, 0.12, 4);
-        B.solid.box('#6d7480', side * 9.2, 0.15 + 1.2, (bz0 + bz1) / 2 - 1.8, 0.12, 2.4, 0.12);
-        B.solid.box('#6d7480', side * 9.2, 0.15 + 1.2, (bz0 + bz1) / 2 + 1.8, 0.12, 2.4, 0.12);
+      // ---- furniture on boulevard sidewalks
+      const leafy = b.district === 'suburb' || b.district === 'residential' || b.district === 'park' || b.district === 'oldtown';
+      for (const w of walks) {
+        const alongZ = w.x1 - w.x0 < w.z1 - w.z0;
+        const cx = (w.x0 + w.x1) / 2, cz = (w.z0 + w.z1) / 2;
+        if (alongZ) {
+          lamp(B, cx, w.z1 - 3, cx > (r.x0 + r.x1) / 2 ? 1 : -1); lamp(B, cx, w.z0 + 3, cx > (r.x0 + r.x1) / 2 ? 1 : -1);
+          if (leafy) { B.solid.box('#9a948a', cx, 0.45, cz, 1.6, 0.6, 1.6); tree(B, rng, cx, cz, 0.7, 0.75); }
+        } else {
+          lamp(B, w.x1 - 3, cz, 0, true); lamp(B, w.x0 + 3, cz, 0, true);
+          if (leafy) { B.solid.box('#9a948a', cx, 0.45, cz, 1.6, 0.6, 1.6); tree(B, rng, cx, cz, 0.7, 0.75); }
+        }
       }
-    }
-  }
-  // traffic on the avenue's outer lanes
-  for (let n = 0; n < rng.int(2, 5); n++) {
-    const side = rng.sign();
-    const z = z1 - rng.range(2, GRID.CHUNK - 2);
-    if (rng.chance(0.2)) bus(B, rng, side * 5.3, z); else car(B, rng, side * 5.3, z, true, LAYER.STREET);
-  }
-
-  // ---- beyond the grid: low-detail outskirts and hills
-  for (const side of [1, -1] as const) {
-    const n = quality === 'high' ? 14 : 7;
-    for (let m = 0; m < n; m++) {
-      const x = side * rng.range(GRID_END_X + 20, GRID_END_X + 140);
-      const z = z1 - rng.range(0, GRID.CHUNK);
-      const tall = district === 'downtown' || district === 'commercial';
-      if (district === 'suburb' || district === 'park') {
-        if (rng.chance(0.5)) tree(B, rng, x, z, 1.2); else B.solid.box(rng.pick(PAL.walls), x, 1.8, z, 6, 3.6, 5);
-      } else {
-        const h = tall ? rng.range(10, 50) : rng.range(5, 16);
-        const pal = tall ? [...PAL.tower, ...PAL.glass] : district === 'industrial' ? ['#c9cdd2', '#b8bec6', '#d7d3c8'] : [...PAL.paint, ...PAL.brick, ...PAL.pastel];
-        B.solid.box(rng.pick(pal), x, h / 2, z, rng.range(6, 12), h, rng.range(6, 12));
-        if (!tall && rng.chance(0.5)) B.solid.add(PRISM, rng.pick(PAL.roofs), x, h, z, 0, 0, 0, 9, 3.5, 9);
+      if (b.wW === BOULEVARD_KERB && b.wN === BOULEVARD_KERB) trafficLight(B, r.x0 + 0.8, r.z1 - 0.8, -1);
+      setOffset(B, 0);
+      // parked cars on the ordinary street to the north
+      if (b.wN === STREET_HALF && rng.chance(0.7)) {
+        for (let n = 0; n < rng.int(1, 3); n++) {
+          const x = rng.range(b.tile.x0 + 6, b.tile.x1 - 6), zz = b.tile.z1 + rng.sign() * 2.6;
+          car(B, rng, x, zz, false, hAt(x, zz) + LAYER.STREET);
+        }
       }
-    }
-    if (rng.chance(0.5)) {
-      B.solid.add(SPHERE_LO, rng.pick(['#9bd48a', '#86c777', '#a8dc96']), side * rng.range(GRID_END_X + 200, GRID_END_X + 330), -8, zc, 0, 0, 0, rng.range(90, 160), rng.range(26, 46), rng.range(80, 130));
+      // the launch tower straddles the avenue just behind the cannon
+      if (ix === 0 && jz === -1) buildLaunchBuilding(B, rng);
     }
   }
-
-  if (i === 0) buildLaunchBuilding(B, rng);
-  return { animated };
+  setOffset(B, 0);
+  return { animated, blocks };
 }
 
-/** The tower the avenue starts from: the slingshot sits on its roof terrace. */
+/** A cheap stand-in for distant macro tiles: ground plus simple massing. */
+export function buildFarMacroTile(B: Batches, ctx: CityCtx, I: number, J: number): void {
+  const hAt = (x: number, z: number) => ctx.terrain.at(x, z);
+  for (let ix = I * MACRO; ix < (I + 1) * MACRO; ix++) {
+    for (let jz = J * MACRO; jz < (J + 1) * MACRO; jz++) {
+      const b = blockInfo(ctx, ix, jz);
+      const rng = new Rng(`${ctx.seed}:far:${ix}:${jz}`);
+      if (b.district === 'river') { B.solid.addRaw(terrainQuad(b.tile.x0, b.tile.x1, b.tile.z0, b.tile.z1, hAt, -0.8, 2, 2), PAL.water); continue; }
+      const base = b.district === 'suburb' || b.district === 'park' ? PAL.grass : b.district === 'industrial' ? '#b3aea4' : PAL.sidewalk;
+      B.solid.addRaw(terrainQuad(b.tile.x0, b.tile.x1, b.tile.z0, b.tile.z1, hAt, -0.02, 2, 2), base);
+      const r = b.rect;
+      setOffset(B, b.e);
+      if (b.district === 'park') { for (let i = 0; i < 4; i++) tree(B, rng, rng.range(r.x0 + 2, r.x1 - 2), rng.range(r.z0 + 2, r.z1 - 2), 1.1); setOffset(B, 0); continue; }
+      const tall = b.district === 'downtown' || b.district === 'commercial';
+      const n = b.district === 'suburb' ? 4 : tall ? 1 + rng.int(0, 1) : 2 + rng.int(0, 2);
+      for (let i = 0; i < n; i++) {
+        const w = rng.range(6, 12), d = rng.range(6, 10);
+        const x = rng.range(r.x0 + w / 2, r.x1 - w / 2), z = rng.range(r.z0 + d / 2, r.z1 - d / 2);
+        const h = b.district === 'suburb' ? 3.5 : b.district === 'downtown' ? rng.range(25, 70) : b.district === 'commercial' ? rng.range(8, 28) : b.district === 'industrial' ? rng.range(6, 10) : rng.range(8, 14);
+        const pal = tall ? [...PAL.tower, ...PAL.glass] : b.district === 'industrial' ? ['#c9cdd2', '#b8bec6'] : b.district === 'suburb' ? PAL.walls : [...PAL.paint, ...PAL.brick, ...PAL.pastel];
+        B.solid.box(rng.pick(pal), x, h / 2, z, w, h, d);
+        if (h < 15 && rng.chance(0.6)) B.solid.add(PRISM, rng.pick(PAL.roofs), x, h, z, 0, 0, 0, w + 0.4, Math.min(3.5, w * 0.35), d + 0.4);
+      }
+      setOffset(B, 0);
+    }
+  }
+}
+
+function buildRiverTile(B: Batches, ctx: CityCtx, b: BlockInfo, rng: Rng): void {
+  const hAt = (x: number, z: number) => ctx.terrain.at(x, z);
+  const t = b.tile;
+  B.solid.addRaw(terrainQuad(t.x0, t.x1, t.z0, t.z1, hAt, -0.8, 3, 3), PAL.water);
+  for (let n = 0; n < 6; n++) { const x = rng.range(t.x0 + 2, t.x1 - 2), z = rng.range(t.z0 + 3, t.z1 - 3); B.solid.add(PLANE, PAL.waterLight, x, hAt(x, z) - 0.74, z, -Math.PI / 2, 0, 0, rng.range(4, 10), 0.5, 1); }
+  // banks: the north street is a riverside road; a wall drops to the water on both edges
+  B.solid.addRaw(terrainQuad(t.x0, t.x1, t.z1 - b.wN, t.z1 + b.wN, hAt, LAYER.STREET, 6, 1), PAL.asphalt);
+  for (const zb of [t.z1 - b.wN, t.z0 + b.wS]) {
+    const y = hAt((t.x0 + t.x1) / 2, zb);
+    B.solid.box('#a9a398', (t.x0 + t.x1) / 2, y - 0.6, zb, t.x1 - t.x0, 1.4, 1.0);
+    for (let x = t.x0 + 6; x < t.x1; x += 12) { B.solid.add(CYL_LO, '#4b515b', x, y + 1.5, zb, 0, 0, 0, 0.12, 3, 0.12); B.solid.add(SPHERE_LO, '#fff3b0', x, y + 3.1, zb, 0, 0, 0, 0.5); }
+  }
+  // the west street crosses as a bridge if the route uses it, otherwise it just ends at the bank
+  if (b.wW === BOULEVARD_KERB) {
+    const x = t.x0;
+    for (let z = t.z1; z > t.z0; z -= 8) {
+      const y0 = hAt(x, z), y1 = hAt(x, z - 8);
+      B.solid.addRaw(terrainQuad(x - BOULEVARD_KERB - 0.5, x + BOULEVARD_KERB + 0.5, z - 8, z, hAt, -0.4, 1, 1), '#8b8f96');
+      B.solid.addRaw(terrainQuad(x - BOULEVARD_HALF, x + BOULEVARD_HALF, z - 8, z, hAt, LAYER.STREET, 1, 1), '#8b8f96');
+      for (const side of [1, -1]) {
+        B.solid.box(PAL.sidewalk2, x + side * (BOULEVARD_HALF + 1.25), (y0 + y1) / 2 + 0.075, z - 4, 2.5, 0.15, 8);
+        B.solid.box('#dfe3e8', x + side * (BOULEVARD_KERB - 0.2), (y0 + y1) / 2 + 0.75, z - 4, 0.25, 1.2, 8);
+        B.solid.box('#9ea3aa', x + side * 6, (y0 + y1) / 2 - 4.5, z - 4, 2.4, 8, 3);
+      }
+      B.solid.add(TORUS, '#9ea3aa', x, (y0 + y1) / 2 - 1.0, z - 4, 0, 0, 0, 18, 7, 2.5);
+    }
+  }
+  // boats
+  for (let n = 0; n < 2; n++) {
+    const x = rng.range(t.x0 + 4, t.x1 - 4), z = rng.range(t.z0 + 6, t.z1 - 6);
+    if (b.wW === BOULEVARD_KERB && Math.abs(x - t.x0) < 14) continue;
+    const c = rng.pick(['#ffffff', '#f2c14e', '#e2574c', '#5fb8e6']);
+    B.solid.add(BOX, c, x, hAt(x, z) - 0.4, z, 0, rng.range(0, Math.PI), 0, 2.2, 0.8, 6);
+    B.solid.add(BOX, '#3b3f47', x, hAt(x, z) + 0.4, z, 0, 0, 0, 1.4, 0.8, 2);
+  }
+}
+
 function buildLaunchBuilding(B: Batches, rng: Rng): void {
   const H = LAUNCH_H;
   const r: Rect = { x0: -GRID.KERB, x1: GRID.KERB, z0: -6, z1: 30 };
@@ -914,48 +933,40 @@ function buildLaunchBuilding(B: Batches, rng: Rng): void {
   B.solid.box('#8d5a3b', 0, 2, r.z0 - 0.05, 3, 4, 0.2);
 }
 
-function buildRiver(B: Batches, rng: Rng, i: number): void {
-  const z1 = -i * GRID.CHUNK, z0 = z1 - GRID.CHUNK, zc = (z0 + z1) / 2;
-  const W = 620;
-  // water
-  B.solid.add(PLANE, PAL.water, 0, -0.8, zc, -Math.PI / 2, 0, 0, W * 2, GRID.CHUNK, 1);
-  for (let n = 0; n < 40; n++) B.solid.add(PLANE, PAL.waterLight, rng.range(-W, W), -0.74, z1 - rng.range(2, GRID.CHUNK - 2), -Math.PI / 2, 0, 0, rng.range(4, 14), 0.5, 1);
-  // banks (walls along both chunk edges) + riverside promenade
-  for (const zb of [z1, z0]) {
-    B.solid.box('#a9a398', 0, -0.4, zb, W * 2, 0.9, 1.2);
-    B.solid.box('#cfcac0', 0, 0.075, zb + (zb === z1 ? 2 : -2), W * 2, 0.15, 4);
-    for (let x = -GRID_END_X; x <= GRID_END_X; x += 12) {
-      if (Math.abs(x) < 11) continue;
-      B.solid.add(CYL_LO, '#4b515b', x, 0.15 + 1.5, zb + (zb === z1 ? 1.2 : -1.2), 0, 0, 0, 0.12, 3, 0.12);
-      B.solid.add(SPHERE_LO, '#fff3b0', x, 0.15 + 3.1, zb + (zb === z1 ? 1.2 : -1.2), 0, 0, 0, 0.5);
-    }
+/** A town square on the inside of a route corner. */
+function plazaBlock(B: Batches, rng: Rng, r: Rect): void {
+  const cx = (r.x0 + r.x1) / 2, cz = (r.z0 + r.z1) / 2;
+  B.solid.add(PLANE, PAL.pavers, cx, LAYER.LOT, cz, -Math.PI / 2, 0, 0, r.x1 - r.x0, r.z1 - r.z0, 1);
+  B.solid.add(PLANE, '#cdb78f', cx, LAYER.DETAIL, cz, -Math.PI / 2, 0, 0, (r.x1 - r.x0) * 0.6, (r.z1 - r.z0) * 0.6, 1);
+  const kind = rng.next();
+  if (kind < 0.4) {
+    B.solid.add(CYL, '#cfc7b8', cx, 0.4, cz, 0, 0, 0, 7, 0.6, 7);
+    B.solid.add(CYL, PAL.waterLight, cx, 0.62, cz, 0, 0, 0, 6.2, 0.2, 6.2);
+    B.solid.add(CYL_LO, '#cfc7b8', cx, 1.6, cz, 0, 0, 0, 1.2, 2, 1.2);
+    B.solid.add(CYL, '#cfc7b8', cx, 2.6, cz, 0, 0, 0, 3.2, 0.3, 3.2);
+    B.solid.add(CYL_LO, '#cfe8f5', cx, 4, cz, 0, 0, 0, 0.35, 3, 0.35);
+  } else if (kind < 0.7) {
+    B.solid.box('#d9d0c0', cx, 0.75, cz, 5, 1.5, 5);
+    B.solid.add(PYRAMID, '#e7dfd0', cx, 1.5 + 7, cz, 0, Math.PI / 4, 0, 2.4, 14, 2.4);
+    B.solid.add(PYRAMID, '#f2c14e', cx, 15.6, cz, 0, Math.PI / 4, 0, 0.7, 1.1, 0.7);
+  } else {
+    // statue of a certain daredevil
+    B.solid.box('#9a948a', cx, 1, cz, 3, 2, 3);
+    B.solid.add(CYL_LO, '#b8a34a', cx, 3.5, cz, 0, 0, 0, 1.0, 3, 1.0);
+    B.solid.add(SPHERE_LO, '#b8a34a', cx, 5.4, cz, 0, 0, 0, 0.9);
+    B.solid.add(BOX, '#b8a34a', cx, 4.6, cz, 0, 0, 0.5, 3.2, 0.4, 0.4);
   }
-  // bridge carrying the avenue: deck, railings, pylons and arches
-  B.solid.box('#8b8f96', 0, -0.4, zc, 2 * GRID.KERB + 1, 0.8, GRID.CHUNK + 2);
-  B.solid.box(PAL.sidewalk2, -(GRID.AVE + 1.25), 0.075, zc, 2.5, 0.15, GRID.CHUNK);
-  B.solid.box(PAL.sidewalk2, GRID.AVE + 1.25, 0.075, zc, 2.5, 0.15, GRID.CHUNK);
-  for (const side of [1, -1]) {
-    B.solid.box('#dfe3e8', side * (GRID.KERB - 0.2), 0.15 + 0.6, zc, 0.25, 1.2, GRID.CHUNK);
-    for (let z = z1 - 4; z > z0; z -= 4) B.solid.box('#dfe3e8', side * (GRID.KERB - 0.2), 0.15 + 0.5, z, 0.35, 1.0, 0.35);
-    for (let z = z1 - 8; z > z0; z -= 16) lamp(B, side * 8.7, z);
+  for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const px = cx + dx * (r.x1 - r.x0) * 0.36, pz = cz + dz * (r.z1 - r.z0) * 0.36;
+    B.solid.box('#9a948a', px, 0.5, pz, 2.2, 0.7, 2.2);
+    tree(B, rng, px, pz, 0.7, 0.8);
+    B.solid.box('#8a5a3c', px + dx * 3, 0.5, pz, 0.5, 0.5, 1.8);
   }
-  for (let z = z1 - 8; z > z0; z -= 16) {
-    for (const side of [1, -1]) B.solid.box('#9ea3aa', side * 6, -4, z, 2.4, 8, 3);
-    B.solid.add(TORUS, '#9ea3aa', 0, -0.8, z + 8, 0, 0, 0, 18, 7, 2.5);
-  }
-  // boats
-  for (let n = 0; n < 6; n++) {
-    const x = rng.range(-W * 0.8, W * 0.8);
-    if (Math.abs(x) < 14) continue;
-    const z = z1 - rng.range(6, GRID.CHUNK - 6);
-    const c = rng.pick(['#ffffff', '#f2c14e', '#e2574c', '#5fb8e6']);
-    B.solid.add(BOX, c, x, -0.4, z, 0, rng.range(0, Math.PI), 0, 2.2, 0.8, 6);
-    B.solid.add(BOX, '#3b3f47', x, 0.4, z, 0, 0, 0, 1.4, 0.8, 2);
-  }
-  // distant hills across the water
-  for (const side of [1, -1]) {
-    B.solid.add(SPHERE_LO, '#9bd48a', side * rng.range(GRID_END_X + 150, GRID_END_X + 300), -8, zc, 0, 0, 0, rng.range(90, 160), rng.range(26, 46), rng.range(80, 130));
-  }
+  for (let i = 0; i < 3; i++) flowerBed(B, rng, cx + (i - 1) * 6, r.z0 + 2.5, 1);
+}
+
+function landmarkAt(B: Batches, rng: Rng, kind: Landmark, r: Rect, animated: AnimatedObject[], mkMat: (c: string) => THREE.Material): void {
+  landmark(B, rng, kind, r, 1, animated, mkMat);
 }
 
 export interface GroundStyle { ave: string; track: string; line: string; lane: string; cross: string; label: string; labelStroke: string }

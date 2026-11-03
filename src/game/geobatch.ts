@@ -22,12 +22,14 @@ function nonIndexed(geo: THREE.BufferGeometry): THREE.BufferGeometry {
 
 export class GeoBatch {
   private parts: THREE.BufferGeometry[] = [];
+  /** Added to every part's position (used to lift whole blocks onto the terrain). */
+  readonly offset = new THREE.Vector3();
 
   /** Add a transformed, coloured copy of `geo`. */
   add(geo: THREE.BufferGeometry, color: THREE.ColorRepresentation, x: number, y: number, z: number,
       rx = 0, ry = 0, rz = 0, sx = 1, sy = sx, sz = sx): void {
     const g = nonIndexed(geo).clone();
-    tmpP.set(x, y, z);
+    tmpP.set(x + this.offset.x, y + this.offset.y, z + this.offset.z);
     tmpQ.setFromEuler(tmpE.set(rx, ry, rz));
     tmpS.set(sx, sy, sz);
     tmpM.compose(tmpP, tmpQ, tmpS);
@@ -50,6 +52,20 @@ export class GeoBatch {
     this.add(BOX, color, x, y, z, 0, ry, 0, w, h, d);
   }
 
+  /** Add an already-built, world-space geometry (e.g. a terrain-following strip). Takes ownership. */
+  addRaw(geo: THREE.BufferGeometry, color: THREE.ColorRepresentation): void {
+    const g = geo.index ? geo.toNonIndexed() : geo;
+    if (g !== geo) geo.dispose();
+    tmpC.set(color);
+    const n = g.attributes.position.count;
+    const colors = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { colors[i * 3] = tmpC.r; colors[i * 3 + 1] = tmpC.g; colors[i * 3 + 2] = tmpC.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+    g.deleteAttribute('uv1'); g.deleteAttribute('uv2');
+    this.parts.push(g);
+  }
+
   get size(): number { return this.parts.length; }
 
   build(material: THREE.Material): THREE.Mesh | null {
@@ -62,6 +78,37 @@ export class GeoBatch {
     mesh.matrixAutoUpdate = false;
     return mesh;
   }
+}
+
+/**
+ * A horizontal quad (x0..x1 × z0..z1) subdivided so its vertices can follow a
+ * height function. `lift` is added to every height.
+ */
+export function terrainQuad(x0: number, x1: number, z0: number, z1: number, heightAt: (x: number, z: number) => number, lift: number, segX = 2, segZ = 2): THREE.BufferGeometry {
+  const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0, segX, segZ);
+  g.rotateX(-Math.PI / 2);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) + cx, z = pos.getZ(i) + cz;
+    pos.setXYZ(i, x, heightAt(x, z) + lift, z);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+/** A quad between two route samples (a strip segment), following the terrain. */
+export function stripQuad(ax: number, az: number, bx: number, bz: number, nxA: number, nzA: number, nxB: number, nzB: number, halfW: number, heightAt: (x: number, z: number) => number, lift: number, offsetN = 0): THREE.BufferGeometry {
+  const p = (x: number, z: number) => [x, heightAt(x, z) + lift, z];
+  const a0 = p(ax + nxA * (offsetN - halfW), az + nzA * (offsetN - halfW));
+  const a1 = p(ax + nxA * (offsetN + halfW), az + nzA * (offsetN + halfW));
+  const b0 = p(bx + nxB * (offsetN - halfW), bz + nzB * (offsetN - halfW));
+  const b1 = p(bx + nxB * (offsetN + halfW), bz + nzB * (offsetN + halfW));
+  const verts = new Float32Array([...a0, ...b0, ...b1, ...a0, ...b1, ...a1]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+  g.computeVertexNormals();
+  return g;
 }
 
 // ---- shared primitives ----------------------------------------------------

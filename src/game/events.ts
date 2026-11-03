@@ -15,6 +15,8 @@ export interface EventObject {
   triggered: boolean;
   age: number;
   decoy: boolean;
+  /** Place the object in the world: route point, ground height, right-hand normal and heading. */
+  anchor(x: number, y: number, z: number, nx: number, nz: number, heading: number): void;
   update(dt: number, elapsed: number): void;
   /** Called with the time remaining until the trigger; fliers use it to glide in from the side. */
   approach(timeToTrigger: number): void;
@@ -100,9 +102,10 @@ function gull(mk: (c: string) => THREE.Material): { g: THREE.Group; wl: THREE.Me
 
 export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSystem, decoy = false): EventObject {
   const group = new THREE.Group();
-  const z = -e.s;
-  group.position.set(0, 0, z);
+  // all builders work in a local frame: -z forward along the route, x to the right, y up from the ground
+  const z = 0;
   const flyIn = !decoy && FLY_IN.has(e.kind);
+  const base = { x: 0, y: 0, z: 0, nx: 1, nz: 0 };
   const mats: THREE.Material[] = [];
   const mk = (c: string, extra: Partial<THREE.MeshLambertMaterialParameters> = {}): THREE.Material => {
     const m = new THREE.MeshLambertMaterial({ color: c, ...extra });
@@ -114,19 +117,24 @@ export function makeEventObject(e: PlanEvent, h: number, particles: ParticleSyst
   const side = e.x >= 0 ? 1 : -1;
   const self: EventObject = {
     event: e, group, triggered: false, age: -1, decoy,
+    anchor(x, y, zz, nx, nz, heading) {
+      base.x = x; base.y = y; base.z = zz; base.nx = nx; base.nz = nz;
+      group.position.set(x, y, zz);
+      group.rotation.set(0, heading, 0);
+      if (flyIn) this.approach(99);
+    },
     update(dt, elapsed) { if (this.triggered) this.age += dt; update(dt, elapsed); },
     approach(ttt) {
-      if (!flyIn || this.triggered) { if (flyIn) group.position.x = 0; return; }
+      if (!flyIn) return;
       // fully off to the side 2.2 s out, in position 0.3 s before the moment
-      const k = Math.min(1, Math.max(0, (ttt - 0.3) / 1.9));
+      const k = this.triggered ? 0 : Math.min(1, Math.max(0, (ttt - 0.3) / 1.9));
       const ease = k * k * (3 - 2 * k);
-      group.position.x = side * 70 * ease;
-      group.position.y = 12 * ease;
+      const off = side * 70 * ease;
+      group.position.set(base.x + base.nx * off, base.y + 12 * ease, base.z + base.nz * off);
     },
     trigger() { if (this.triggered) return; this.triggered = true; this.age = 0; onTrigger(); },
     dispose() { for (const m of mats) m.dispose(); },
   };
-  if (flyIn) { group.position.x = side * 70; group.position.y = 12; }
 
   switch (e.kind) {
     // ───────────────────────── boosts ─────────────────────────

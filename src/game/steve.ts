@@ -47,12 +47,129 @@ export interface SteveRig {
   cape: THREE.Mesh | null;
   pack: THREE.Mesh;
   height: number;
+  /** Secondary motion input: world velocity of the figure (for the cape and limb lag). */
+  velocity: THREE.Vector3;
   /** blend towards a pose; speed in radians per second */
   setPose(name: keyof typeof POSES | Pose, speed?: number): void;
   /** instantly snap to a pose */
   snapPose(name: keyof typeof POSES | Pose): void;
   update(dt: number, t: number): void;
   dispose(): void;
+}
+
+// ---------------------------------------------------------------- cloth cape
+class ClothCape {
+  readonly mesh: THREE.Mesh;
+  private W = 5; private H = 7;
+  private pos: Float32Array; private prev: Float32Array;
+  private rest: { a: number; b: number; d: number; k: number }[] = [];
+  private pinsLocal: THREE.Vector3[] = [];
+  private tmp = new THREE.Vector3();
+  private tmp2 = new THREE.Vector3();
+  private inv = new THREE.Matrix4();
+  private initialised = false;
+
+  constructor(private torso: THREE.Object3D, private group: THREE.Object3D, material: THREE.Material, scale: number) {
+    const geo = new THREE.PlaneGeometry(1, 1, this.W - 1, this.H - 1);
+    this.mesh = new THREE.Mesh(geo, material);
+    this.mesh.frustumCulled = false;
+    const n = this.W * this.H;
+    this.pos = new Float32Array(n * 3);
+    this.prev = new Float32Array(n * 3);
+    // local layout (torso space): hangs from the shoulders, widening toward the hem
+    for (let j = 0; j < this.H; j++) for (let i = 0; i < this.W; i++) {
+      const v = j / (this.H - 1);
+      const half = 0.2 + 0.26 * v;
+      const x = (i / (this.W - 1) - 0.5) * 2 * half;
+      this.pinsLocal.push(new THREE.Vector3(x, 0.62 - v * 0.95, 0.2 + v * 0.1));
+    }
+    const idx = (i: number, j: number) => j * this.W + i;
+    const link = (a: number, b: number, k: number) => {
+      const pa = this.pinsLocal[a], pb = this.pinsLocal[b];
+      this.rest.push({ a, b, d: pa.distanceTo(pb) * scale, k });
+    };
+    for (let j = 0; j < this.H; j++) for (let i = 0; i < this.W; i++) {
+      if (i + 1 < this.W) link(idx(i, j), idx(i + 1, j), 1);
+      if (j + 1 < this.H) link(idx(i, j), idx(i, j + 1), 1);
+      if (i + 1 < this.W && j + 1 < this.H) { link(idx(i, j), idx(i + 1, j + 1), 0.7); link(idx(i + 1, j), idx(i, j + 1), 0.7); }
+      if (i + 2 < this.W) link(idx(i, j), idx(i + 2, j), 0.5);
+      if (j + 2 < this.H) link(idx(i, j), idx(i, j + 2), 0.6);
+    }
+  }
+
+  reset(): void { this.initialised = false; }
+
+  update(dt: number, t: number, velocity: THREE.Vector3): void {
+    const n = this.W * this.H;
+    this.torso.updateWorldMatrix(true, false);
+    if (!this.initialised) {
+      for (let k = 0; k < n; k++) {
+        this.tmp.copy(this.pinsLocal[k]).applyMatrix4(this.torso.matrixWorld);
+        this.pos[k * 3] = this.prev[k * 3] = this.tmp.x;
+        this.pos[k * 3 + 1] = this.prev[k * 3 + 1] = this.tmp.y;
+        this.pos[k * 3 + 2] = this.prev[k * 3 + 2] = this.tmp.z;
+      }
+      this.initialised = true;
+    }
+    dt = Math.min(dt, 1 / 30);
+    const damp = 0.985;
+    const g = -9.8 * 0.55;
+    // air drag toward still air; a little gust so it never sits dead still
+    const drag = 2.2;
+    const gust = Math.sin(t * 4.1) * 0.6 + Math.sin(t * 2.3 + 1) * 0.4;
+    for (let k = 0; k < n; k++) {
+      const o = k * 3;
+      const vx = (this.pos[o] - this.prev[o]) / Math.max(1e-4, dt), vy = (this.pos[o + 1] - this.prev[o + 1]) / Math.max(1e-4, dt), vz = (this.pos[o + 2] - this.prev[o + 2]) / Math.max(1e-4, dt);
+      const ax = -vx * drag + gust, ay = g - vy * drag * 0.6, az = -vz * drag;
+      const nx = this.pos[o] + (this.pos[o] - this.prev[o]) * damp + ax * dt * dt;
+      const ny = this.pos[o + 1] + (this.pos[o + 1] - this.prev[o + 1]) * damp + ay * dt * dt;
+      const nz = this.pos[o + 2] + (this.pos[o + 2] - this.prev[o + 2]) * damp + az * dt * dt;
+      this.prev[o] = this.pos[o]; this.prev[o + 1] = this.pos[o + 1]; this.prev[o + 2] = this.pos[o + 2];
+      this.pos[o] = nx; this.pos[o + 1] = ny; this.pos[o + 2] = nz;
+    }
+    void velocity;
+    // pins: the top row follows the shoulders
+    for (let i = 0; i < this.W; i++) {
+      this.tmp.copy(this.pinsLocal[i]).applyMatrix4(this.torso.matrixWorld);
+      this.pos[i * 3] = this.tmp.x; this.pos[i * 3 + 1] = this.tmp.y; this.pos[i * 3 + 2] = this.tmp.z;
+    }
+    // constraints: stiff enough to read as a superhero cape, not a bedsheet
+    this.inv.copy(this.torso.matrixWorld).invert();
+    for (let it = 0; it < 5; it++) {
+      for (const r of this.rest) {
+        const a = r.a * 3, b = r.b * 3;
+        let dx = this.pos[b] - this.pos[a], dy = this.pos[b + 1] - this.pos[a + 1], dz = this.pos[b + 2] - this.pos[a + 2];
+        const d = Math.hypot(dx, dy, dz) || 1e-6;
+        const diff = ((d - r.d) / d) * 0.5 * r.k;
+        dx *= diff; dy *= diff; dz *= diff;
+        const pa = r.a < this.W, pb = r.b < this.W;
+        if (!pa) { this.pos[a] += dx; this.pos[a + 1] += dy; this.pos[a + 2] += dz; }
+        if (!pb) { this.pos[b] -= dx; this.pos[b + 1] -= dy; this.pos[b + 2] -= dz; }
+        if (pa && !pb) { this.pos[b] -= dx; this.pos[b + 1] -= dy; this.pos[b + 2] -= dz; }
+        if (pb && !pa) { this.pos[a] += dx; this.pos[a + 1] += dy; this.pos[a + 2] += dz; }
+      }
+      // keep the cape behind the back (torso space z >= 0.16)
+      for (let k = this.W; k < n; k++) {
+        const o = k * 3;
+        this.tmp.set(this.pos[o], this.pos[o + 1], this.pos[o + 2]).applyMatrix4(this.inv);
+        if (this.tmp.z < 0.16) {
+          this.tmp.z = 0.16;
+          this.tmp2.copy(this.tmp).applyMatrix4(this.torso.matrixWorld);
+          this.pos[o] = this.tmp2.x; this.pos[o + 1] = this.tmp2.y; this.pos[o + 2] = this.tmp2.z;
+        }
+      }
+    }
+    // write into the mesh in the group's local space
+    this.group.updateWorldMatrix(true, false);
+    this.inv.copy(this.group.matrixWorld).invert();
+    const attr = this.mesh.geometry.attributes.position as THREE.BufferAttribute;
+    for (let k = 0; k < n; k++) {
+      this.tmp.set(this.pos[k * 3], this.pos[k * 3 + 1], this.pos[k * 3 + 2]).applyMatrix4(this.inv);
+      attr.setXYZ(k, this.tmp.x, this.tmp.y, this.tmp.z);
+    }
+    attr.needsUpdate = true;
+    this.mesh.geometry.computeVertexNormals();
+  }
 }
 
 function capsule(r: number, len: number, mat: THREE.Material): THREE.Mesh {
@@ -124,22 +241,14 @@ export function buildSteve(suit: SuitDef): SteveRig {
   };
   leg(-1); leg(1);
 
-  // cape hangs from the shoulders down the back
+  // cape: a small cloth simulation pinned at the shoulders (added to the group, simulated in world space)
   let cape: THREE.Mesh | null = null;
+  let cloth: ClothCape | null = null;
   if (suit.cape) {
-    // a tapered cape: narrow at the shoulders, wide at the hem
-    const cg = new THREE.PlaneGeometry(1, 0.9, 1, 5);
-    const pos = cg.attributes.position as THREE.BufferAttribute;
-    for (let i = 0; i < pos.count; i++) {
-      const y = pos.getY(i) - 0.45; // 0 at the top, -0.9 at the hem
-      pos.setY(i, y);
-      pos.setX(i, pos.getX(i) * (0.4 + (-y) * 0.5));
-    }
-    cape = new THREE.Mesh(cg, mats.cape);
-    cape.position.set(0, 0.62, 0.2);
-    cape.rotation.x = 0.35;
-    torso.add(cape);
-    geos.push(cg);
+    cloth = new ClothCape(torso, group, mats.cape, 1.45);
+    cape = cloth.mesh;
+    group.add(cape);
+    geos.push(cape.geometry);
   }
 
   // backpack frame with bottle rockets
@@ -161,16 +270,22 @@ export function buildSteve(suit: SuitDef): SteveRig {
     rockets.push(g); rocketTips.push(nozzle);
   }
 
-  // ---- animator
+  // ---- animator: each joint follows its target with an under-damped spring, so limbs
+  // overshoot and settle like a rag doll instead of snapping between poses
   const current: Record<Joint, THREE.Vector3> = {} as Record<Joint, THREE.Vector3>;
   const target: Record<Joint, THREE.Vector3> = {} as Record<Joint, THREE.Vector3>;
-  for (const j of JOINTS) { current[j] = new THREE.Vector3(); target[j] = new THREE.Vector3(); }
+  const vel: Record<Joint, THREE.Vector3> = {} as Record<Joint, THREE.Vector3>;
+  for (const j of JOINTS) { current[j] = new THREE.Vector3(); target[j] = new THREE.Vector3(); vel[j] = new THREE.Vector3(); }
   let speed = 6;
+  const velocity = new THREE.Vector3();
+  const lastVel = new THREE.Vector3();
+  const lag = new THREE.Vector3();   // filtered acceleration, drives limb lag
+  const LIMBS: Joint[] = ['lShoulder', 'rShoulder', 'lHip', 'rHip'];
   const resolve = (p: keyof typeof POSES | Pose): Pose => (typeof p === 'string' ? POSES[p] : p);
   const apply = () => { for (const j of JOINTS) joints[j].rotation.set(current[j].x, current[j].y, current[j].z); };
 
   const rig: SteveRig = {
-    group, body, root, rockets, rocketTips, cape, pack, height: 1.9,
+    group, body, root, rockets, rocketTips, cape, pack, height: 1.9, velocity,
     setPose(p, s = 6) {
       const pose = resolve(p);
       speed = s;
@@ -178,22 +293,31 @@ export function buildSteve(suit: SuitDef): SteveRig {
     },
     snapPose(p) {
       const pose = resolve(p);
-      for (const j of JOINTS) { const r = pose[j] ?? [0, 0, 0]; target[j].set(r[0], r[1], r[2]); current[j].copy(target[j]); }
+      for (const j of JOINTS) { const r = pose[j] ?? [0, 0, 0]; target[j].set(r[0], r[1], r[2]); current[j].copy(target[j]); vel[j].set(0, 0, 0); }
       apply();
+      cloth?.reset();
     },
     update(dt, t) {
-      const k = Math.min(1, speed * dt);
-      for (const j of JOINTS) current[j].lerp(target[j], k);
-      apply();
-      if (cape) {
-        // cape flutter: bend the lower vertices back and forth
-        const pos = cape.geometry.attributes.position as THREE.BufferAttribute;
-        for (let i = 0; i < pos.count; i++) {
-          const y = -pos.getY(i); // 0 at top, 0.9 at the hem
-          pos.setZ(i, Math.sin(t * 6 + y * 4) * 0.1 * y + y * 0.15);
-        }
-        pos.needsUpdate = true;
+      dt = Math.min(dt, 1 / 30);
+      // spring: omega from the requested speed, damping ratio ~0.55 for a little overshoot
+      const w = speed * 1.6, zeta = 0.55;
+      // limb lag from acceleration (filtered): limbs trail when the body is thrown around
+      const ax = (velocity.x - lastVel.x) / Math.max(1e-3, dt), ay = (velocity.y - lastVel.y) / Math.max(1e-3, dt), az = (velocity.z - lastVel.z) / Math.max(1e-3, dt);
+      lastVel.copy(velocity);
+      lag.x += (Math.max(-40, Math.min(40, ax)) - lag.x) * Math.min(1, dt * 6);
+      lag.y += (Math.max(-40, Math.min(40, ay)) - lag.y) * Math.min(1, dt * 6);
+      lag.z += (Math.max(-40, Math.min(40, az)) - lag.z) * Math.min(1, dt * 6);
+      for (const j of JOINTS) {
+        const c = current[j], tg = target[j], v = vel[j];
+        const extra = LIMBS.includes(j) ? -lag.y * 0.012 : 0;
+        const ex = c.x - (tg.x + extra), ey = c.y - tg.y, ez = c.z - tg.z;
+        v.x += (-w * w * ex - 2 * zeta * w * v.x) * dt;
+        v.y += (-w * w * ey - 2 * zeta * w * v.y) * dt;
+        v.z += (-w * w * ez - 2 * zeta * w * v.z) * dt;
+        c.x += v.x * dt; c.y += v.y * dt; c.z += v.z * dt;
       }
+      apply();
+      cloth?.update(dt, t, velocity);
     },
     dispose() { for (const g of geos) g.dispose(); for (const m of Object.values(mats)) m.dispose(); },
   };

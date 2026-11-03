@@ -17,6 +17,7 @@ import { buildCannon, type Cannon } from './cannon';
 import { World } from './world';
 import { LAUNCH_H } from './constants';
 import { isGroundKind } from './flightPlan';
+import type { RouteSample } from './route';
 
 export type GameState = 'menu' | 'aiming' | 'betting' | 'flying' | 'landed';
 
@@ -43,6 +44,7 @@ export interface EngineEvents {
 interface Impulse { strength: number; remaining: number; duration: number }
 
 const PRONE = -Math.PI / 2;
+const UPDATE_MARK = 0;
 
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
@@ -105,6 +107,11 @@ export class Engine {
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private tmpV3 = new THREE.Vector3();
+  private rs: RouteSample = { x: 0, z: 0, tx: 0, tz: -1, nx: 1, nz: 0, heading: 0 };
+  private rs2: RouteSample = { x: 0, z: 0, tx: 0, tz: -1, nx: 1, nz: 0, heading: 0 };
+  private lastPos = new THREE.Vector3();
+  private sNow = 0;
+  private shake = 0;
 
   constructor(canvas: HTMLCanvasElement, events: EngineEvents) {
     this.events = events;
@@ -191,7 +198,7 @@ export class Engine {
     if (this.steve) { this.scene.remove(this.steve.group); this.steve.dispose(); }
     this.suit = def;
     this.steve = buildSteve(def);
-    this.steve.group.scale.setScalar(1.25);
+    this.steve.group.scale.setScalar(1.45);
     this.scene.add(this.steve.group);
     this.placeOnRoof();
   }
@@ -286,7 +293,7 @@ export class Engine {
     this.plan = null; this.result = null; this.tau = 0; this.flightClock = 0;
     this.impulses = []; this.lift = 0; this.liftVel = 0; this.lateral = 0; this.lateralVel = 0;
     this.bonk = 0; this.landedAt = -1; this.resultSent = false; this.preroll = null; this.fumbleShown = false;
-    this.spin = 0; this.spinRate = 0; this.bounceSpinUntil = -1; this.landOrbit = 0;
+    this.spin = 0; this.spinRate = 0; this.bounceSpinUntil = -1; this.landOrbit = 0; this.sNow = 0; this.shake = 0;
     this.blowerActive = false; this.blower.visible = false; this.blowerHum?.stop(); this.blowerHum = null;
     for (const r of this.rocketsLit) r.stop();
     this.rocketsLit = []; this.rocketNext = 0; this.rocketTotal = 0;
@@ -345,6 +352,7 @@ export class Engine {
     // pick up the plan at the distance the pre-roll has already covered, so there is no jump
     const g = this.steve.group;
     const covered = this.preroll ? Math.max(0, this.preroll.z0 - g.position.z) : 0;
+    this.sNow = covered;
     this.preroll = null;
     let tau = 0;
     while (tau < plan.T && sampleAt(plan.s, plan.dt, tau) < covered) tau += plan.dt;
@@ -366,8 +374,11 @@ export class Engine {
     if (!this.steve) return false;
     this.ndcFromEvent(e);
     this.raycaster.setFromCamera(this.pointerNdc, this.camera);
-    const pz = this.steve.group.position.z + 1.6;
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -pz);
+    // a vertical plane just behind Steve, facing back along the route
+    const r = this.world ? this.world.route.at(this.sNow, this.rs) : this.rs;
+    const normal = new THREE.Vector3(-r.tx, 0, -r.tz);
+    const point = this.steve.group.position.clone().addScaledVector(normal, 1.6);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point);
     return !!this.raycaster.ray.intersectPlane(plane, out);
   }
 
@@ -428,8 +439,11 @@ export class Engine {
     const dist = d.length();
     if (dist < 1e-3) return { forward: 0, lift: 0, lateral: 0, falloff: 0 };
     d.divideScalar(dist);
+    const r = this.world ? this.world.route.at(this.sNow, this.rs) : this.rs;
     const falloff = Math.max(0, 1 - Math.max(0, dist - 1.2) / 5.5);
-    return { forward: Math.max(0, -d.z), lift: Math.max(0, d.y), lateral: d.x, falloff };
+    const forward = Math.max(0, d.x * r.tx + d.z * r.tz);
+    const lateral = d.x * r.nx + d.z * r.nz;
+    return { forward, lift: Math.max(0, d.y), lateral, falloff };
   }
 
   private fireConfetti(at: THREE.Vector3): void {
@@ -480,18 +494,26 @@ export class Engine {
     else if (this.state === 'flying') this.updateFlight(dt);
     else this.updateLanded(dt);
 
-    const pz = this.steve ? this.steve.group.position.z : 0;
-    this.world?.update(dt, pz, this.camera.position.z, this.camera.position.y, this.tau, this.state === 'flying' || this.state === 'betting');
+    this.world?.update(dt, this.sNow, this.camera.position, this.tau, this.state === 'flying' || this.state === 'betting');
     this.particles.update(dt, this.camera);
-    this.steve?.update(dt, this.menuTime);
     if (this.steve) {
+      // feed the rig its world velocity for the cape and the rag-doll lag
       const p = this.steve.group.position;
-      const onRoof = p.z > -6;
-      this.blob.position.set(p.x + this.steve.body.position.x * 1.25, onRoof ? LAUNCH_H + 0.08 : 0.3, p.z);
-      const rel = p.y - (onRoof ? LAUNCH_H : 0);
-      const s = Math.max(0.5, 1.4 - rel * 0.02);
-      this.blob.scale.set(s * 1.1, s, 1);
+      if (dt > 0) this.steve.velocity.copy(p).sub(this.lastPos).divideScalar(dt);
+      this.lastPos.copy(p);
+      this.steve.update(dt, this.menuTime);
+      const onRoof = Math.hypot(p.x, p.z) < 32 && p.z > -6;
+      const ground = onRoof ? LAUNCH_H : (this.world ? this.world.terrain.at(p.x, p.z) : 0);
+      this.blob.position.set(p.x, ground + 0.08, p.z);
+      const rel = p.y - ground;
+      const sc = Math.max(0.5, 1.4 - rel * 0.02);
+      this.blob.scale.set(sc * 1.1, sc, 1);
       (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.16 * Math.max(0, 1 - rel / 40);
+    }
+    if (this.shake > 0) {
+      this.camera.position.x += (Math.random() - 0.5) * this.shake * 0.5;
+      this.camera.position.y += (Math.random() - 0.5) * this.shake * 0.5;
+      this.shake = Math.max(0, this.shake - dt * 3);
     }
     this.renderer.render(this.scene, this.camera);
   }
@@ -579,9 +601,21 @@ export class Engine {
       if (!eo.triggered && this.tau >= eo.event.t) {
         eo.trigger();
         const kind = eo.event.kind;
-        if (kind === 'dumpster' || kind === 'hay') { audio.bonk(); audio.whoosh(0.5, 0.7, 0.8); }
-        else if (eo.event.delta > 0) { audio.boing(); if (isGroundKind(kind)) { this.bounceSpinUntil = this.tau + 0.9; this.spinRate = 9; } }
-        else { audio.bonk(); this.bonk = 1; if (isGroundKind(kind)) { this.bounceSpinUntil = this.tau + 0.6; this.spinRate = 6; } }
+        const mag = Math.min(1.5, Math.abs(eo.event.delta) / plan.v0 * 3);   // how big a deal this hit is
+        if (kind === 'dumpster' || kind === 'hay') { audio.bonk(); audio.whoosh(0.5, 0.7, 0.8); this.shake = 0.8; }
+        else if (eo.event.delta > 0) {
+          audio.boing();
+          if (isGroundKind(kind)) { this.bounceSpinUntil = this.tau + 0.5 + mag * 0.5; this.spinRate = 6 + mag * 5; }
+          this.particles.emit({ pos: steve.group.position.clone(), vel: new THREE.Vector3(0, 1, 0), spread: 2.5, count: 10 + Math.round(mag * 20), life: 0.6, size: 0.25, endSize: 0.02, colors: ['#ffffff', '#fff3c4'], drag: 1.5 });
+        } else {
+          audio.bonk();
+          this.bonk = 0.5 + mag;
+          this.shake = mag * 0.6;
+          if (isGroundKind(kind)) { this.bounceSpinUntil = this.tau + 0.4 + mag * 0.5; this.spinRate = 5 + mag * 4; }
+          else { this.bounceSpinUntil = this.tau + mag * 0.5; this.spinRate = 4 + mag * 6; }
+          // impact stars
+          this.particles.emit({ pos: steve.group.position.clone(), vel: new THREE.Vector3(0, 2, 0), spread: 3, count: 6 + Math.round(mag * 10), life: 0.9, size: 0.35, endSize: 0.1, colors: ['#ffd166', '#ffffff', '#ff9a3c'], drag: 1.2, spin: 8 });
+        }
       }
     }
 
@@ -596,21 +630,21 @@ export class Engine {
     const t = this.tau;
     const st = this.suit.flight;
     let sx = 0, sy = 0, roll = 0, yaw = 0, pitch = 0;
-    const wind = 0.08 * Math.sin(t * 0.63 + 1.7) + 0.05 * Math.sin(t * 1.31);
+    const wind = 0.05 * Math.sin(t * 0.43 + 1.7) + 0.03 * Math.sin(t * 0.91);
     switch (st) {
-      case 'steady': sx = 0.16 * Math.sin(t * 0.7); sy = 0.1 * Math.sin(t * 0.9 + 1); roll = 0.1 * Math.sin(t * 0.7 + 1); break;
-      case 'swoop': sy = 0.7 * Math.sin(t * 0.55); pitch = 0.35 * Math.cos(t * 0.55); sx = 0.2 * Math.sin(t * 0.4); roll = 0.12 * Math.sin(t * 0.4); break;
-      case 'rockabye': roll = 0.5 * Math.sin(t * 1.4); sx = 0.35 * Math.sin(t * 1.4 - 0.6); sy = 0.08 * Math.sin(t * 2.8); break;
+      case 'steady': sx = 0.12 * Math.sin(t * 0.5); sy = 0.05 * Math.sin(t * 0.7 + 1); roll = 0.06 * Math.sin(t * 0.5 + 1); break;
+      case 'swoop': sy = 0.25 * Math.sin(t * 0.45); pitch = 0.12 * Math.cos(t * 0.45); sx = 0.15 * Math.sin(t * 0.3); roll = 0.08 * Math.sin(t * 0.3); break;
+      case 'rockabye': roll = 0.3 * Math.sin(t * 0.9); sx = 0.25 * Math.sin(t * 0.9 - 0.6); sy = 0.04 * Math.sin(t * 1.8); break;
       case 'twirl': {
-        roll = 0.18 * Math.sin(t * 0.9);
-        const period = 5.5, u = (t % period) / period;
-        if (u > 0.7) { const q = (u - 0.7) / 0.3; roll += Math.PI * 2 * (q * q * (3 - 2 * q)); }
-        sx = 0.25 * Math.sin(t * 0.8); sy = 0.15 * Math.sin(t * 1.1);
+        roll = 0.12 * Math.sin(t * 0.7);
+        const period = 6.5, u = (t % period) / period;
+        if (u > 0.75) { const q = (u - 0.75) / 0.25; roll += Math.PI * 2 * (q * q * (3 - 2 * q)); }
+        sx = 0.18 * Math.sin(t * 0.6); sy = 0.06 * Math.sin(t * 0.8);
         break;
       }
-      case 'flutter': sy = 0.12 * Math.sin(t * 5) + 0.1 * Math.sin(t * 3.1); sx = 0.1 * Math.sin(t * 4.2); pitch = 0.08 * Math.sin(t * 5); roll = 0.12 * Math.sin(t * 3.3); break;
-      case 'dart': sx = 0.06 * Math.sin(t * 3); yaw = 0.05 * Math.sin(t * 3); roll = 0.04 * Math.sin(t * 2.2); sy = 0.04 * Math.sin(t * 1.7); break;
-      case 'drift': sx = 0.9 * Math.sin(t * 0.6) + 0.3 * Math.sin(t * 1.3); yaw = 0.25 * Math.cos(t * 0.6); roll = 0.3 * Math.cos(t * 0.6); sy = 0.15 * Math.sin(t * 0.9); break;
+      case 'flutter': sy = 0.06 * Math.sin(t * 3) + 0.04 * Math.sin(t * 1.9); sx = 0.08 * Math.sin(t * 2.6); pitch = 0.04 * Math.sin(t * 3); roll = 0.08 * Math.sin(t * 2.1); break;
+      case 'dart': sx = 0.05 * Math.sin(t * 2); yaw = 0.04 * Math.sin(t * 2); roll = 0.03 * Math.sin(t * 1.6); sy = 0.02 * Math.sin(t * 1.3); break;
+      case 'drift': sx = 0.6 * Math.sin(t * 0.45) + 0.2 * Math.sin(t * 1.0); yaw = 0.15 * Math.cos(t * 0.45); roll = 0.2 * Math.cos(t * 0.45); sy = 0.06 * Math.sin(t * 0.7); break;
     }
     const speedFrac = Math.min(1, v / plan.v0);
     const grounded = this.tau >= plan.landT;
@@ -646,11 +680,14 @@ export class Engine {
       this.spin += (whole - this.spin) * Math.min(1, dt * 5);
     }
 
-    // ---- place Steve
+    // ---- place Steve along the route
     const g = steve.group;
-    g.position.set(0, h + this.lift * 0.8, -s);
+    this.sNow = s;
+    const r = this.world!.route.at(s, this.rs);
+    const ground = this.world!.terrain.at(r.x, r.z);
+    g.position.set(r.x, ground + h + this.lift * 0.8, r.z);
     const slope = THREE.MathUtils.clamp(Math.atan2(hNext - h, Math.max(0.05, 0.15 * Math.max(0.5, v))), -0.5, 0.5);
-    g.rotation.set(0, 0, 0);
+    g.rotation.set(0, r.heading, 0);
     const body = steve.body;
     body.position.set(sx + this.lateral, sy, 0);
     body.rotation.set(0, yaw - this.lateral * 0.15, roll - (sx + this.lateral) * 0.25);
@@ -678,16 +715,19 @@ export class Engine {
     }
     this.rocketsLit = this.rocketsLit.filter(r => r.age < 1.6);
 
-    // ---- camera: fixed on the centre line, smooth in height, trailing behind
+    // ---- camera: on the route centre line behind Steve, smooth in height
     const vNorm = Math.min(1, v / 60);
-    const targetY = g.position.y + 2.0 + vNorm * 1.6;
+    const targetY = g.position.y + 2.2 + vNorm * 1.4;
     this.camY += (targetY - this.camY) * Math.min(1, dt * 3);
-    const back = 7 + vNorm * 5;
-    this.camera.position.set(0, this.camY, g.position.z + back);
+    const back = 6 + vNorm * 3.5;
+    const cb = this.world!.route.at(Math.max(0, s - back), this.rs2);
+    this.camera.position.set(cb.x, this.camY, cb.z);
+    const la = this.world!.route.at(s + 16, this.rs2);
     // keep Steve a little above the centre of the frame
-    this.camera.lookAt(0, g.position.y - 0.9 + (this.camY - targetY) * 0.5, g.position.z - 16);
+    this.camera.lookAt(la.x, g.position.y - 0.9 + (this.camY - targetY) * 0.5, la.z);
 
     this.cannon.group.visible = s < 80;
+    void UPDATE_MARK;
 
     // ---- HUD
     const progress = s / plan.L;
@@ -757,7 +797,6 @@ export class Engine {
       else if (T < 4.1) { steve.setPose('brushR', 7); }
       else if (T < 4.5) { steve.setPose('gingerly', 8); steve.root.rotation.set(0, Math.sin((T - 4.1) * 25) * 0.25, 0); }
       else { steve.setPose('hero', 6); steve.root.rotation.set(0, 0, 0); }
-      g.rotation.set(0, 0, 0);
       done = 5.4;
     } else if (ending === 'dumpster') {
       // hidden under the lid, then pops up in triumph
@@ -794,10 +833,10 @@ export class Engine {
     // slow orbit around the landing spot
     this.landOrbit += dt * 0.35;
     const r = 7.5;
-    const cx = Math.sin(this.landOrbit) * r, cz = g.position.z + Math.cos(this.landOrbit) * r;
+    const cx = g.position.x + Math.sin(this.landOrbit) * r, cz = g.position.z + Math.cos(this.landOrbit) * r;
     // frame Steve in the upper half so the result card never covers him
     this.camera.position.lerp(this.tmpV3.set(cx, g.position.y + 3.4, cz), Math.min(1, dt * 2.5));
-    this.camera.lookAt(0, g.position.y - 0.8, g.position.z);
+    this.camera.lookAt(g.position.x, g.position.y - 0.8, g.position.z);
 
     if (!this.resultSent && T > done) {
       this.resultSent = true;
