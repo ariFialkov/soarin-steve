@@ -36,7 +36,8 @@ function loadProfile(): Profile {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const p = JSON.parse(raw) as Partial<Profile>;
-      const merged: Profile = { ...base, ...p, selected: { ...base.selected, ...(p.selected || {}) }, boosts: { ...base.boosts, ...(p.boosts || {}) } };
+      // no wardrobe any more: every stuntman always flies his tier's signature suit
+      const merged: Profile = { ...base, ...p, selected: { ...base.selected }, boosts: { ...base.boosts, ...(p.boosts || {}) } };
       // make sure defaults are always owned and selections are valid
       for (const t of TIERS) {
         const d = defaultSuitFor(t).id;

@@ -27,8 +27,13 @@
         </div>
 
         <div class="edge edge-left">
-          <button class="tag" id="btn-hangar"><span class="ico">🦸</span><span>Wardrobe</span></button>
-          <button class="tag" id="btn-boosts"><span class="ico">🎉</span><span>Boosts</span><span class="pill" id="boost-count" hidden>0</span></button>
+          <div class="boost-panel plate" id="boost-panel">
+            <div class="bp-head"><span class="bp-title">Boosts</span><span class="lbl">for the next flight</span></div>
+            <div id="bp-rows"></div>
+            <div class="bp-total"><span class="lbl">Wager</span><span id="bp-total">$1.00</span></div>
+            <div class="bp-note" id="bp-split"></div>
+            <div class="bp-note bp-fine">Use them mid-flight. Unused boosts aren't refunded.</div>
+          </div>
         </div>
 
         <div class="edge edge-right">
@@ -51,7 +56,7 @@
           </div>
           <div class="wager plate">
             <span class="lbl">Wager</span><span id="hud-wager">$1.00</span>
-            <span class="lbl" id="hud-plane">Big Top Red</span>
+            <span class="lbl" id="hud-plane">Soarin' Steve</span>
           </div>
         </div>
 

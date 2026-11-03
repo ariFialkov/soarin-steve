@@ -8,6 +8,8 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
+      // plain .json name: some hosts reject the .webmanifest extension
+      manifestFilename: 'manifest.json',
       includeAssets: ['icons/*.png', 'icons/*.svg'],
       manifest: {
         name: "Soarin' Steve",

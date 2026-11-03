@@ -21,12 +21,13 @@ npm test           # outcome maths + flight plan checks
 ```
 
 Install it as an app from the browser menu ("Add to Home Screen" / "Install"). After the first
-visit it works offline.
+visit it works offline. The web app manifest is written as `dist/manifest.json` (not
+`.webmanifest`) so hosts that reject that extension accept the build.
 
 ## How a round is decided
 
-1. The player picks a tier (which fixes the stake) and a stunt suit from that tier, and
-   optionally buys mid-flight boosts. Boost costs are added to the wager.
+1. The player picks a tier (which fixes the stake) and optionally loads mid-flight boosts in the
+   panel on the menu's left edge. Boost costs are added to the wager.
 2. When the cannon fires, the client sends one bet request to `src/core/server.ts`.
    That module is a mock of a game server, written like a remote API so it can be moved to a
    real backend untouched. It:
@@ -107,7 +108,7 @@ Each stake has its own stuntman, built from the same rig with his own proportion
 His shadow is a planar projection of his body onto the ground along the sun, drawn as one merged
 mesh with a stencil so limbs never double-darken (one extra draw, no change to the city shaders).
 
-## Steve and his wardrobe
+## Steve
 
 Steve is a jointed figure built from primitives (`src/game/steve.ts`) with a library of poses
 (cannonball tuck, superman, flying squirrel, flail, sprawl, sit, gingerly, brush, hero, triumph).
@@ -129,7 +130,8 @@ one sitting.
 The payout tables are built so their raw expectation is already near the RTP, so rescaling does
 not crush losses: big losses (under 0.3×) are 2 to 12% of rounds depending on stake, the median
 round returns about 0.6 to 0.75×, and misfires are a rare Legend-only surprise. A test guards it.
-Each tier has a free default suit; the rest are bought from the wallet.
+Each stuntman flies in his tier's signature suit. The suit catalogue (`src/data/suits.ts`) is
+still in the code but no longer has a menu of its own.
 
 ## Look
 
@@ -152,9 +154,9 @@ they work offline. Numbers sit directly on solid plates, never on a translucent 
 
 ```
 src/core      config (RTP, tiers, boosts), RNG, outcome maths, mock server, player profile
-src/data      the suit wardrobe
+src/data      suit catalogue (each tier flies its default suit)
 src/game      three.js engine, Steve's rig and poses, cannon, flight plan, city, events, audio
-src/ui        DOM menu / HUD / wardrobe / shop / settings, SVG suit thumbnails
+src/ui        DOM menu (stakes + always-open boost loadout) / HUD / settings / result card
 tests         node:test checks for the economy and flight planner
 ```
 
