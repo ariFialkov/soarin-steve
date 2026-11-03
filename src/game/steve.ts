@@ -60,7 +60,8 @@ export interface SteveRig {
 // ---------------------------------------------------------------- cloth cape
 class ClothCape {
   readonly mesh: THREE.Mesh;
-  private W = 5; private H = 7;
+  private W = 7; private H = 9;
+  private pinned: boolean[] = [];
   private pos: Float32Array; private prev: Float32Array;
   private rest: { a: number; b: number; d: number; k: number }[] = [];
   private pinsLocal: THREE.Vector3[] = [];
@@ -82,6 +83,8 @@ class ClothCape {
       const half = 0.22 + 0.3 * v;
       const x = (i / (this.W - 1) - 0.5) * 2 * half;
       this.pinsLocal.push(new THREE.Vector3(x, 0.62 - v * 1.15, 0.2 + v * 0.1));
+      // only the two collarbone corners are fixed; the rest of the top edge hangs between them
+      this.pinned.push(j === 0 && (i === 0 || i === this.W - 1));
     }
     const idx = (i: number, j: number) => j * this.W + i;
     const link = (a: number, b: number, k: number) => {
@@ -128,8 +131,9 @@ class ClothCape {
       this.pos[o] = nx; this.pos[o + 1] = ny; this.pos[o + 2] = nz;
     }
     void velocity;
-    // pins: the top row follows the shoulders
-    for (let i = 0; i < this.W; i++) {
+    // pins: the collarbone corners follow the shoulders
+    for (let i = 0; i < n; i++) {
+      if (!this.pinned[i]) continue;
       this.tmp.copy(this.pinsLocal[i]).applyMatrix4(this.torso.matrixWorld);
       this.pos[i * 3] = this.tmp.x; this.pos[i * 3 + 1] = this.tmp.y; this.pos[i * 3 + 2] = this.tmp.z;
     }
@@ -142,14 +146,15 @@ class ClothCape {
         const d = Math.hypot(dx, dy, dz) || 1e-6;
         const diff = ((d - r.d) / d) * 0.5 * r.k;
         dx *= diff; dy *= diff; dz *= diff;
-        const pa = r.a < this.W, pb = r.b < this.W;
+        const pa = this.pinned[r.a], pb = this.pinned[r.b];
         if (!pa) { this.pos[a] += dx; this.pos[a + 1] += dy; this.pos[a + 2] += dz; }
         if (!pb) { this.pos[b] -= dx; this.pos[b + 1] -= dy; this.pos[b + 2] -= dz; }
         if (pa && !pb) { this.pos[b] -= dx; this.pos[b + 1] -= dy; this.pos[b + 2] -= dz; }
         if (pb && !pa) { this.pos[a] += dx; this.pos[a + 1] += dy; this.pos[a + 2] += dz; }
       }
       // keep the cape behind the back (torso space z >= 0.16)
-      for (let k = this.W; k < n; k++) {
+      for (let k = 0; k < n; k++) {
+        if (this.pinned[k]) continue;
         const o = k * 3;
         this.tmp.set(this.pos[o], this.pos[o + 1], this.pos[o + 2]).applyMatrix4(this.inv);
         if (this.tmp.z < 0.16) {

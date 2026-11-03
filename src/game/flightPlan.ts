@@ -256,7 +256,7 @@ export function buildFlightPlan(opts: {
   const h0 = LAUNCH_H + 3.6;
   const peak = 2 + (8 + 16 * opts.angle) * Math.min(1, L / 150) + Math.min(40, L / 32);
   const landT = endingFinal === 'sprawl' ? T_air : T;
-  const groundH = endingFinal === 'dumpster' ? 1.6 : endingFinal === 'hay' ? 2.6 : 0.3;
+  const groundH = endingFinal === 'dumpster' ? 1.6 : endingFinal === 'hay' ? 2.6 : 0.05;
   const styleLift = opts.style === 'swoop' ? 1.2 : opts.style === 'flutter' ? 0.85 : 1;
   // parabola h(t) = h0 + b t - q² t² with apex h0 + peak·styleLift and h(landT) = groundH
   const pk = peak * styleLift;
@@ -269,7 +269,7 @@ export function buildFlightPlan(opts: {
     else h = groundH;
     hArr[i] = Math.max(groundH, h);
   }
-  if (endingFinal === 'sprawl') for (let i = 0; i < N; i++) if (i * dt > landT) hArr[i] = 0.3;
+  if (endingFinal === 'sprawl') for (let i = 0; i < N; i++) if (i * dt > landT) hArr[i] = groundH;
 
   // Now that the height profile exists, pick an object that makes sense at each event's altitude.
   let lastKind: EventKind | null = null;
@@ -385,8 +385,8 @@ function buildFumblePlan(rng: Rng, L: number, power: number, unitsPerMetre: numb
       const u = t / landT;
       // brief hop, then it tumbles off the roof and drops to the street
       h = h0 * (1 - u) * (1 - u) + peak * Math.sin(Math.PI * Math.min(1, u * 1.4)) * (1 - u);
-    } else h = 0.3;
-    hArr[i] = Math.max(0.3, h);
+    } else h = 0.05;
+    hArr[i] = Math.max(0.05, h);
   }
   return { L, T, v0: v0 * k, events: [], dt, s: sArr, v: vArr, h: hArr, landT, unitsPerMetre, fumble: kind, ending: 'sprawl', tuckTime: 0.4 };
 }

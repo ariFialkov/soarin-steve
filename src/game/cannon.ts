@@ -33,11 +33,11 @@ export function buildCannon(): Cannon {
     const wheel = mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.25, 16), mats.gold); wheel.rotation.z = Math.PI / 2; wheel.position.set(sx * 1.3, 0.9, 0.3); group.add(wheel);
     const tyre = mesh(new THREE.TorusGeometry(0.9, 0.09, 8, 20), mats.dark); tyre.rotation.y = Math.PI / 2; tyre.position.set(sx * 1.3, 0.9, 0.3); group.add(tyre);
     for (let i = 0; i < 4; i++) { const sp = mesh(new THREE.BoxGeometry(0.1, 1.7, 0.1), mats.red); sp.rotation.x = i * Math.PI / 4; sp.position.set(sx * 1.3, 0.9, 0.3); group.add(sp); }
-    const bracket = mesh(new THREE.BoxGeometry(0.25, 1.2, 0.5), mats.dark); bracket.position.set(sx * 0.95, 1.35, 0); group.add(bracket);
+    const bracket = mesh(new THREE.BoxGeometry(0.25, 2.0, 0.6), mats.dark); bracket.position.set(sx * 0.95, 1.7, 0); group.add(bracket);
   }
   // barrel pivots on the trunnion
   const barrel = new THREE.Group();
-  barrel.position.set(0, 1.75, 0);
+  barrel.position.set(0, 2.6, 0);
   const tube = mesh(new THREE.CylinderGeometry(0.62, 0.72, 4.2, 18), mats.red); tube.rotation.x = Math.PI / 2; tube.position.z = -1.2; barrel.add(tube);
   // the breech is its own part: packing the powder pushes it back
   const breech = new THREE.Group();
@@ -72,9 +72,9 @@ export function buildCannon(): Cannon {
       recoil = Math.max(0, recoil - dt * 2.2);
       flashT = Math.max(0, flashT - dt * 5);
       void t;
-      barrel.rotation.x = baseElev + charge * 0.45 + recoil * 0.12;
-      barrel.position.z = recoil * 0.6;
-      breech.position.z = 0.9 + charge * 0.9;
+      barrel.rotation.x = baseElev + charge * 0.22 + recoil * 0.1;
+      barrel.position.z = recoil * 0.5;
+      breech.position.z = 0.9 + charge * 0.5;
       group.position.z = 0.6 + recoil * 0.25;
       (mats.flash as THREE.MeshBasicMaterial).opacity = flashT * 0.9;
       flash.scale.setScalar(0.6 + (1 - flashT) * 1.4);

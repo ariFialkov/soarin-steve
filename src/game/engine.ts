@@ -90,7 +90,6 @@ export class Engine {
   private spin = 0;            // tumbling rotation (rad) about the body's x axis
   private spinRate = 0;
   private bounceSpinUntil = -1;
-  private landOrbit = 0;
 
   // boosts inventory for the current round
   private blowerSeconds = 0;
@@ -301,7 +300,7 @@ export class Engine {
     this.plan = null; this.result = null; this.tau = 0; this.flightClock = 0;
     this.impulses = []; this.lift = 0; this.liftVel = 0; this.lateral = 0; this.lateralVel = 0;
     this.bonk = 0; this.landedAt = -1; this.resultSent = false; this.preroll = null; this.fumbleShown = false;
-    this.spin = 0; this.spinRate = 0; this.bounceSpinUntil = -1; this.landOrbit = 0; this.sNow = 0; this.shake = 0;
+    this.spin = 0; this.spinRate = 0; this.bounceSpinUntil = -1; this.sNow = 0; this.shake = 0;
     this.blowerActive = false; this.blower.visible = false; this.blowerHum?.stop(); this.blowerHum = null;
     for (const r of this.rocketsLit) r.stop();
     this.rocketsLit = []; this.rocketNext = 0; this.rocketTotal = 0;
@@ -637,25 +636,28 @@ export class Engine {
     const t = this.tau;
     const st = this.suit.flight;
     let sx = 0, sy = 0, roll = 0, yaw = 0, pitch = 0;
-    const wind = 0.05 * Math.sin(t * 0.43 + 1.7) + 0.03 * Math.sin(t * 0.91);
     switch (st) {
-      case 'steady': sx = 0.12 * Math.sin(t * 0.5); sy = 0.05 * Math.sin(t * 0.7 + 1); roll = 0.06 * Math.sin(t * 0.5 + 1); break;
-      case 'swoop': sy = 0.25 * Math.sin(t * 0.45); pitch = 0.12 * Math.cos(t * 0.45); sx = 0.15 * Math.sin(t * 0.3); roll = 0.08 * Math.sin(t * 0.3); break;
-      case 'rockabye': roll = 0.3 * Math.sin(t * 0.9); sx = 0.25 * Math.sin(t * 0.9 - 0.6); sy = 0.04 * Math.sin(t * 1.8); break;
+      case 'steady': sx = 0.22 * Math.sin(t * 0.55); sy = 0.12 * Math.sin(t * 0.75 + 1); roll = 0.1 * Math.sin(t * 0.55 + 1); break;
+      case 'swoop': sy = 0.45 * Math.sin(t * 0.5); pitch = 0.18 * Math.cos(t * 0.5); sx = 0.25 * Math.sin(t * 0.35); roll = 0.12 * Math.sin(t * 0.35); break;
+      case 'rockabye': roll = 0.4 * Math.sin(t * 1.0); sx = 0.4 * Math.sin(t * 1.0 - 0.6); sy = 0.08 * Math.sin(t * 2.0); break;
       case 'twirl': {
-        roll = 0.12 * Math.sin(t * 0.7);
+        roll = 0.15 * Math.sin(t * 0.7);
         const period = 6.5, u = (t % period) / period;
         if (u > 0.75) { const q = (u - 0.75) / 0.25; roll += Math.PI * 2 * (q * q * (3 - 2 * q)); }
-        sx = 0.18 * Math.sin(t * 0.6); sy = 0.06 * Math.sin(t * 0.8);
+        sx = 0.28 * Math.sin(t * 0.6); sy = 0.12 * Math.sin(t * 0.8);
         break;
       }
-      case 'flutter': sy = 0.06 * Math.sin(t * 3) + 0.04 * Math.sin(t * 1.9); sx = 0.08 * Math.sin(t * 2.6); pitch = 0.04 * Math.sin(t * 3); roll = 0.08 * Math.sin(t * 2.1); break;
-      case 'dart': sx = 0.05 * Math.sin(t * 2); yaw = 0.04 * Math.sin(t * 2); roll = 0.03 * Math.sin(t * 1.6); sy = 0.02 * Math.sin(t * 1.3); break;
-      case 'drift': sx = 0.6 * Math.sin(t * 0.45) + 0.2 * Math.sin(t * 1.0); yaw = 0.15 * Math.cos(t * 0.45); roll = 0.2 * Math.cos(t * 0.45); sy = 0.06 * Math.sin(t * 0.7); break;
+      case 'flutter': sy = 0.1 * Math.sin(t * 2.6) + 0.08 * Math.sin(t * 1.7); sx = 0.16 * Math.sin(t * 2.2); pitch = 0.06 * Math.sin(t * 2.6); roll = 0.12 * Math.sin(t * 1.9); break;
+      case 'dart': sx = 0.1 * Math.sin(t * 1.8); yaw = 0.06 * Math.sin(t * 1.8); roll = 0.05 * Math.sin(t * 1.4); sy = 0.05 * Math.sin(t * 1.2); break;
+      case 'drift': sx = 0.8 * Math.sin(t * 0.45) + 0.3 * Math.sin(t * 1.0); yaw = 0.2 * Math.cos(t * 0.45); roll = 0.25 * Math.cos(t * 0.45); sy = 0.12 * Math.sin(t * 0.7); break;
     }
+    // Disney-style gusts: slow, smooth wandering around the centre of the frame on top of the suit's own habit
+    const windX = 0.45 * Math.sin(t * 0.37 + 1.7) + 0.25 * Math.sin(t * 0.83 + 0.4);
+    const windY = 0.3 * Math.sin(t * 0.52 + 2.6) + 0.14 * Math.sin(t * 1.21);
+    sx += windX; sy += windY; roll += windX * 0.18; yaw += windX * 0.08; pitch += windY * 0.15;
     const grounded = this.tau >= plan.landT;
     const air = grounded ? Math.max(0, 1 - (this.tau - plan.landT) / 0.3) : 1;
-    sx = (sx + wind) * air; sy *= air; roll *= air; yaw *= air; pitch *= air;
+    sx *= air; sy *= air; roll *= air; yaw *= air; pitch *= air;
     if (this.bonk > 0) { roll += Math.sin(this.bonk * 30) * 0.35 * this.bonk; sy -= this.bonk * 0.3; }
 
     // ---- pose state machine
@@ -707,7 +709,7 @@ export class Engine {
       const vf = Math.min(1, v / 25);
       body.position.y = Math.abs(Math.sin(this.tau * (6 + vf * 6))) * 0.9 * vf;
       body.rotation.set(0, 0, 0);
-      steve.root.position.set(0, 0.55, 0);
+      steve.root.position.set(0, 0.5, 0);
     }
 
     // ---- bottle rockets (visual jets)
@@ -730,6 +732,8 @@ export class Engine {
     this.camY = THREE.MathUtils.clamp(this.camY, targetY - 2.5, targetY + 3.5);
     const back = 6 + vNorm * 3.5;
     const cb = this.world!.route.at(Math.max(0, s - back), this.rs2);
+    // never let the camera sink to road level
+    this.camY = Math.max(this.camY, this.world!.terrain.at(cb.x, cb.z) + 1.6);
     this.camera.position.set(cb.x, this.camY, cb.z);
     const la = this.world!.route.at(s + 16, this.rs2);
     // keep Steve a little above the centre of the frame
@@ -753,7 +757,6 @@ export class Engine {
     // ---- touchdown: hand over to the landing performance
     if (this.tau >= plan.T) {
       this.landedAt = 0;
-      this.landOrbit = 0;
       this.hud.distance = this.result.distance;
       this.hud.cash = this.result.payout;
       this.events.onHud(this.hud);
@@ -785,7 +788,7 @@ export class Engine {
         const flat = Math.round(this.spin / (Math.PI * 2)) * Math.PI * 2;
         this.spin += (flat - this.spin) * Math.min(1, dt * 8);
         steve.root.rotation.set(Math.PI / 2 - this.spin, 0, 0);
-        steve.root.position.set(0, 0.22, 0);
+        steve.root.position.set(0, 0.2, 0);
         if (Math.random() < dt * 6) {
           // little stars circling the head
           const a = Math.random() * Math.PI * 2;
@@ -794,8 +797,8 @@ export class Engine {
       } else if (T < 2.1) {
         steve.setPose('sit', 5);
         const k = Math.min(1, (T - 1.1) / 0.8);
-        steve.root.rotation.set((Math.PI / 2) * (1 - k) * 0.3, Math.PI * k * 0.0, 0);
-        steve.root.position.set(0, 0.22 + 0.33 * k, 0);
+        steve.root.rotation.set((Math.PI / 2) * (1 - k) * 0.3, 0, 0);
+        steve.root.position.set(0, 0.2 + 0.35 * k, 0);
         this.spin = 0;
       } else if (T < 2.9) {
         steve.setPose('gingerly', 4);
@@ -839,13 +842,11 @@ export class Engine {
       done = 3.8;
     }
 
-    // slow orbit around the landing spot
-    this.landOrbit += dt * 0.35;
-    const r = 7.5;
-    const cx = g.position.x + Math.sin(this.landOrbit) * r, cz = g.position.z + Math.cos(this.landOrbit) * r;
-    // frame Steve in the upper half so the result card never covers him
-    this.camera.position.lerp(this.tmpV3.set(cx, g.position.y + 3.4, cz), Math.min(1, dt * 2.5));
-    this.camera.lookAt(g.position.x, g.position.y - 0.8, g.position.z);
+    // stay on the chase camera, settled behind him on the route, trained on Steve
+    const cb = this.world!.route.at(Math.max(0, this.sNow - 7), this.rs2);
+    const camFloor = this.world!.terrain.at(cb.x, cb.z) + 1.6;
+    this.camera.position.lerp(this.tmpV3.set(cb.x, Math.max(camFloor, g.position.y + 3.0), cb.z), Math.min(1, dt * 2.5));
+    this.camera.lookAt(g.position.x, g.position.y + 0.4, g.position.z);
 
     if (!this.resultSent && T > done) {
       this.resultSent = true;
